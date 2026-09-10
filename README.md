@@ -2,7 +2,7 @@
 
 An end-to-end data engineering and machine learning project for forecasting hourly electricity demand across the Southwest Power Pool (SPP) region using historical electricity demand, weather observations, temporal features, lagged demand, and rolling demand statistics.
 
-The project combines **electrical power systems, data engineering, and machine learning** to explore how historical grid behavior and environmental conditions can be used to predict future electricity consumption.
+The project combines **electrical power systems, data engineering, time-series forecasting, and machine learning** to explore how historical grid behavior and environmental conditions can be used to predict future electricity consumption.
 
 ---
 
@@ -29,7 +29,9 @@ This project builds a reproducible pipeline that:
 4. Combines electricity and weather observations.
 5. Engineers time-series forecasting features.
 6. Splits data chronologically.
-7. Trains and evaluates forecasting models.
+7. Creates realistic rolling forecasting baselines.
+8. Trains and evaluates machine-learning models.
+9. Compares model performance using consistent forecasting metrics.
 
 ---
 
@@ -83,10 +85,16 @@ This project builds a reproducible pipeline that:
            2020-2023        2024           2025
                 │
                 ▼
-          Forecast Models
+       Rolling Baseline Forecasts
+                │
+                ▼
+       Machine Learning Models
                 │
                 ▼
          Model Evaluation
+                │
+                ▼
+        Forecast Comparison
 ```
 
 ---
@@ -205,6 +213,14 @@ For each station and year, the pipeline:
 8. Interpolates only short gaps.
 9. Preserves long gaps as missing.
 10. Validates final timestamps and duplicate counts.
+
+NOAA GHCNh timestamps are treated as:
+
+```text
+UTC
+```
+
+The timestamp normalization performed by the project is hourly binning, not a timezone conversion.
 
 ---
 
@@ -414,7 +430,7 @@ The following features are extracted from:
 timestamp_utc
 ```
 
-### Hour
+## Hour
 
 ```text
 hour
@@ -428,9 +444,7 @@ Values:
 
 This helps the model learn daily electricity-use patterns.
 
----
-
-### Day of Week
+## Day of Week
 
 ```text
 day_of_week
@@ -448,9 +462,7 @@ Values:
 6 = Sunday
 ```
 
----
-
-### Month
+## Month
 
 ```text
 month
@@ -464,9 +476,7 @@ Values:
 
 This helps capture seasonal electricity-demand behavior.
 
----
-
-### Weekend Indicator
+## Weekend Indicator
 
 ```text
 is_weekend
@@ -711,13 +721,23 @@ Instead, observations are split chronologically.
 2025 ─── TEST
 ```
 
-Final split sizes:
+Final feature-dataset split sizes:
 
 ```text
 Train:       34,885
 Validation:   8,775
 Test:         8,630
 ```
+
+For the complete electricity-demand series used by the forecasting baselines:
+
+```text
+Training:    35,064 hours
+Validation:   8,784 hours
+Test:         8,760 hours
+```
+
+The difference occurs because the feature dataset removes observations with insufficient lag history or incomplete weather features, while the baseline models operate on the complete validated electricity-demand timeline.
 
 ---
 
@@ -737,6 +757,90 @@ which better reflects how electricity-demand forecasting systems operate in prac
 
 ---
 
+# Forecasting Objective
+
+The primary forecasting objective is:
+
+```text
+24-hour-ahead hourly electricity-demand forecasting
+```
+
+The model predicts the next 24 hourly electricity-demand values.
+
+Conceptually:
+
+```text
+Historical Demand + Weather + Time Features
+                    │
+                    ▼
+           Forecast Next 24 Hours
+```
+
+This resembles the day-ahead forecasting problem commonly used in electric-grid operations.
+
+---
+
+# Rolling Forecast Evaluation
+
+A single forecast from the end of 2023 through all of 2024 would not represent a realistic day-ahead forecasting system.
+
+For example, a forecast for July 2024 should be allowed to use observations from earlier in 2024.
+
+The project therefore uses:
+
+```text
+rolling-origin evaluation
+```
+
+also known as:
+
+```text
+walk-forward validation
+```
+
+The evaluation process behaves like:
+
+```text
+Data available through Dec 31, 2023
+                │
+                ▼
+       Forecast Jan 1, 2024
+          Next 24 hours
+                │
+                ▼
+       Observe Jan 1 demand
+                │
+                ▼
+Data available through Jan 1, 2024
+                │
+                ▼
+       Forecast Jan 2, 2024
+          Next 24 hours
+                │
+                ▼
+              ...
+                │
+                ▼
+       Forecast Dec 31, 2024
+```
+
+The validation configuration is:
+
+```text
+Forecast horizon: 24 hours
+Step size:        24 hours
+Forecast windows: 366
+Total predictions: 8,784
+```
+
+Because 2024 is a leap year:
+
+```text
+366 days × 24 hours = 8,784 predictions
+```
+
+---
+
 # Repository Structure
 
 ```text
@@ -747,7 +851,10 @@ which better reflects how electricity-demand forecasting systems operate in prac
 │   │   └── weather/
 │   │
 │   └── processed/
-│       └── weather/
+│       ├── weather/
+│       ├── swpp_demand_2020_2025.csv
+│       ├── modeling_dataset.csv
+│       └── feature_dataset.csv
 │
 ├── src/
 │   ├── extract_swpp_demand.py
@@ -755,7 +862,8 @@ which better reflects how electricity-demand forecasting systems operate in prac
 │   ├── validate_weather.py
 │   ├── check_weather_gaps.py
 │   ├── build_dataset.py
-│   └── feature_engineering.py
+│   ├── feature_engineering.py
+│   └── train_baseline.py
 │
 ├── .gitignore
 ├── requirements.txt
@@ -788,7 +896,7 @@ SWPP Hourly Demand
 
 ---
 
-# 2. Demand Validation
+## 2. Demand Validation
 
 ```text
 src/validate_demand.py
@@ -813,7 +921,7 @@ Final output:
 
 ---
 
-# 3. Weather Validation
+## 3. Weather Validation
 
 ```text
 src/validate_weather.py
@@ -833,7 +941,7 @@ Responsibilities include:
 
 ---
 
-# 4. Weather Gap Analysis
+## 4. Weather Gap Analysis
 
 ```text
 src/check_weather_gaps.py
@@ -854,7 +962,7 @@ This allows long reporting gaps to be detected before interpolation.
 
 ---
 
-# 5. Dataset Construction
+## 5. Dataset Construction
 
 ```text
 src/build_dataset.py
@@ -900,7 +1008,7 @@ data/processed/modeling_dataset.csv
 
 ---
 
-# 6. Feature Engineering
+## 6. Feature Engineering
 
 ```text
 src/feature_engineering.py
@@ -925,72 +1033,284 @@ data/processed/feature_dataset.csv
 
 ---
 
-# Modeling Strategy
-
-The project will compare simple electricity-demand baselines against machine-learning models.
-
-The planned progression is:
+## 7. Baseline Forecasting
 
 ```text
-Naive Forecasting Baselines
-        │
-        ▼
-Linear Regression
-        │
-        ▼
-Tree-Based Models
-        │
-        ▼
-XGBoost
+src/train_baseline.py
 ```
+
+Creates and evaluates simple Seasonal Naive electricity-demand forecasts.
+
+The baseline pipeline:
+
+1. Loads the complete electricity-demand history.
+2. Converts the data into StatsForecast format.
+3. Separates training, validation, and test periods.
+4. Performs rolling 24-hour forecasting across 2024.
+5. Compares predictions against actual demand.
+6. Calculates MAE, RMSE, and MAPE.
+
+StatsForecast uses the following column structure:
+
+```text
+unique_id
+ds
+y
+```
+
+where:
+
+```text
+unique_id = SWPP
+ds        = timestamp
+y         = actual electricity demand
+```
+
+---
+
+# Modeling Strategy
+
+The project compares simple historical-demand baselines against increasingly capable machine-learning models.
+
+The modeling progression is:
+
+```text
+Seasonal Naive Baselines
+          │
+          ▼
+   Linear Regression
+          │
+          ▼
+   Tree-Based Models
+          │
+          ▼
+       XGBoost
+          │
+          ▼
+   Model Comparison
+```
+
+The purpose of the baseline models is to establish a meaningful performance threshold.
+
+A more complex model should provide measurable improvement over simply using recent historical electricity demand.
 
 ---
 
 # Baseline Models
 
-Before training more complex machine-learning models, simple historical-demand forecasts will establish baseline performance.
+Two Seasonal Naive forecasting baselines are currently evaluated.
 
-## 24-Hour Persistence
-
-Prediction:
+These models are implemented using:
 
 ```text
-Predicted Demand
-=
-Demand 24 hours earlier
-```
-
-Feature:
-
-```text
-demand_lag_24h
+StatsForecast
 ```
 
 ---
 
-## 168-Hour Persistence
+## 24-Hour Seasonal Naive
 
-Prediction:
+The daily Seasonal Naive model uses:
+
+```python
+SeasonalNaive(season_length=24)
+```
+
+For each future hour, the prediction is based on the demand observed at the same hour one day earlier.
+
+Conceptually:
 
 ```text
-Predicted Demand
+Forecast at time t
 =
+Demand at time t - 24 hours
+```
+
+Example:
+
+```text
+Forecast:
+Tuesday 3:00 PM
+
+Uses:
+Monday 3:00 PM demand
+```
+
+The model is still evaluated using a:
+
+```text
+24-hour forecast horizon
+```
+
+and the forecasting origin moves forward one day after every prediction window.
+
+---
+
+## 168-Hour Seasonal Naive
+
+The weekly Seasonal Naive model uses:
+
+```python
+SeasonalNaive(season_length=168)
+```
+
+because:
+
+```text
+24 hours × 7 days = 168 hours
+```
+
+For each future hour, the prediction is based on the corresponding hour from one week earlier.
+
+Conceptually:
+
+```text
+Forecast at time t
+=
+Demand at time t - 168 hours
+```
+
+Example:
+
+```text
+Forecast:
+Tuesday 3:00 PM
+
+Uses:
+Previous Tuesday 3:00 PM demand
+```
+
+The forecast horizon remains:
+
+```text
+24 hours
+```
+
+The value `168` represents the seasonal lookback period, not the forecasting horizon.
+
+---
+
+# Baseline Evaluation Results
+
+Both Seasonal Naive models were evaluated across the full 2024 validation period using rolling 24-hour forecasting.
+
+The evaluation contains:
+
+```text
+366 forecast windows
+24 predictions per window
+8,784 total predictions
+```
+
+Results:
+
+| Model | MAE | RMSE | MAPE |
+|---|---:|---:|---:|
+| **Seasonal Naive - 24 Hour** | **1,457.18 MW** | **2,003.98 MW** | **4.34%** |
+| Seasonal Naive - 168 Hour | 2,823.37 MW | 3,865.90 MW | 8.27% |
+
+---
+
+# Baseline Interpretation
+
+The 24-hour Seasonal Naive baseline substantially outperformed the 168-hour weekly baseline.
+
+## Daily Seasonal Naive
+
+```text
+MAE:  1,457.18 MW
+RMSE: 2,003.98 MW
+MAPE: 4.34%
+```
+
+A MAPE of:
+
+```text
+4.34%
+```
+
+means that the daily Seasonal Naive forecast differs from actual electricity demand by approximately:
+
+```text
+4.34% on average
+```
+
+across the 2024 validation period.
+
+The MAE indicates that the model's hourly forecast is typically off by approximately:
+
+```text
+1,457 MW
+```
+
+The larger RMSE indicates that some forecasting periods contain significantly larger errors that are penalized more strongly by the squared-error calculation.
+
+---
+
+## Daily vs Weekly Demand Persistence
+
+The results show that:
+
+```text
+Demand 24 hours earlier
+```
+
+is substantially more predictive of future SPP hourly demand than:
+
+```text
 Demand 168 hours earlier
 ```
 
-Feature:
+for the 2024 validation period.
+
+MAPE comparison:
 
 ```text
-demand_lag_168h
+24-hour Seasonal Naive:  4.34%
+168-hour Seasonal Naive: 8.27%
 ```
 
-These baselines establish the minimum performance that machine-learning models should outperform.
+The weekly baseline's MAE is also nearly twice as large as the daily baseline.
+
+This establishes the daily Seasonal Naive model as the project's current:
+
+```text
+PRIMARY BASELINE
+```
+
+---
+
+# Baseline to Beat
+
+Future machine-learning models will be compared against:
+
+```text
+Seasonal Naive - 24 Hour
+```
+
+with baseline performance of:
+
+```text
+MAE:  1,457.18 MW
+RMSE: 2,003.98 MW
+MAPE: 4.34%
+```
+
+A successful machine-learning model should ideally improve on all three metrics.
+
+The key modeling question becomes:
+
+```text
+Can weather, calendar behavior, lagged demand,
+and rolling demand statistics outperform
+a simple previous-day electricity-demand forecast?
+```
 
 ---
 
 # Planned Machine Learning Models
 
-Potential forecasting models include:
+The next forecasting models include:
 
 - Linear Regression
 - Random Forest
@@ -1003,14 +1323,46 @@ The models will use combinations of:
 Weather features
 Calendar features
 Historical demand
+Lagged demand
 Rolling demand statistics
+```
+
+---
+
+# Linear Regression
+
+Linear Regression will serve as the first machine-learning model after the Seasonal Naive baselines.
+
+Its purpose is to establish whether a simple supervised-learning model can improve on daily demand persistence.
+
+Potential inputs include:
+
+```text
+Weather features
+hour
+day_of_week
+month
+is_weekend
+demand_lag_1h
+demand_lag_24h
+demand_lag_168h
+demand_rolling_24h
+demand_rolling_168h
+```
+
+The Linear Regression results will be compared directly against:
+
+```text
+MAE:  1,457.18 MW
+RMSE: 2,003.98 MW
+MAPE: 4.34%
 ```
 
 ---
 
 # Evaluation Metrics
 
-Forecast performance will be measured using:
+Forecast performance is measured using three metrics.
 
 ## MAE
 
@@ -1020,7 +1372,25 @@ Mean Absolute Error
 MAE = average absolute prediction error
 ```
 
-MAE provides an intuitive measure of the typical demand-forecast error.
+Mathematically:
+
+```text
+MAE = mean(|actual - predicted|)
+```
+
+MAE provides an intuitive measure of the typical hourly demand-forecast error.
+
+For example:
+
+```text
+MAE = 1,457 MW
+```
+
+means the prediction is approximately:
+
+```text
+1,457 MW away from actual demand on average
+```
 
 ---
 
@@ -1032,7 +1402,9 @@ Root Mean Squared Error
 RMSE = square root of mean squared prediction error
 ```
 
-RMSE penalizes large forecasting errors more heavily.
+RMSE penalizes large forecasting errors more heavily than MAE.
+
+A significantly higher RMSE than MAE can indicate that the model occasionally produces large forecasting misses.
 
 ---
 
@@ -1041,10 +1413,34 @@ RMSE penalizes large forecasting errors more heavily.
 Mean Absolute Percentage Error
 
 ```text
-MAPE = average percentage prediction error
+MAPE = average absolute percentage prediction error
 ```
 
-MAPE makes forecast error easier to interpret relative to actual electricity demand.
+Conceptually:
+
+```text
+MAPE
+=
+mean(
+    |actual - predicted|
+    --------------------
+           actual
+) × 100
+```
+
+MAPE makes forecast performance easier to interpret relative to actual electricity demand.
+
+For example:
+
+```text
+MAPE = 4.34%
+```
+
+means the model differs from actual demand by approximately:
+
+```text
+4.34% on average
+```
 
 ---
 
@@ -1092,46 +1488,58 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Core machine-learning and forecasting dependencies include:
+
+```bash
+pip install pandas numpy scikit-learn statsforecast xgboost
+```
+
 ---
 
 # Run the Data Pipeline
 
 The current pipeline should be executed in the following order.
 
-### 1. Extract Electricity Demand
+## 1. Extract Electricity Demand
 
 ```bash
 python src/extract_swpp_demand.py
 ```
 
-### 2. Validate Demand
+## 2. Validate Demand
 
 ```bash
 python src/validate_demand.py
 ```
 
-### 3. Process Weather
+## 3. Process Weather
 
 ```bash
 python src/validate_weather.py
 ```
 
-### 4. Optional Weather Gap Analysis
+## 4. Optional Weather Gap Analysis
 
 ```bash
 python src/check_weather_gaps.py
 ```
 
-### 5. Build Modeling Dataset
+## 5. Build Modeling Dataset
 
 ```bash
 python src/build_dataset.py
 ```
 
-### 6. Engineer Features
+## 6. Engineer Features
 
 ```bash
 python src/feature_engineering.py
+```
+
+## 7. Train and Evaluate Baselines
+
+```bash
+python src/train_baseline.py
 ```
 
 ---
@@ -1167,22 +1575,38 @@ Raw datasets must be downloaded from the corresponding EIA and NOAA sources befo
 - ETL pipelines
 - Data validation
 - Time-series processing
+- Missing-data analysis
+- Timestamp-aware feature engineering
 
----
+## Time-Series Forecasting
+
+- StatsForecast
+- Seasonal Naive forecasting
+- Rolling-origin evaluation
+- Walk-forward validation
+- Daily seasonality
+- Weekly seasonality
 
 ## Machine Learning
 
 - Scikit-learn
+- Linear Regression
+- Random Forest
+- Gradient Boosting
 - XGBoost
 
----
+## Model Evaluation
+
+- MAE
+- RMSE
+- MAPE
+- Chronological validation
+- Rolling 24-hour forecasting
 
 ## Data Sources
 
 - U.S. Energy Information Administration
 - NOAA Global Historical Climatology Network Hourly
-
----
 
 ## Development
 
@@ -1200,6 +1624,8 @@ Raw datasets must be downloaded from the corresponding EIA and NOAA sources befo
 ✓ EIA electricity-demand extraction
 
 ✓ Demand validation
+
+✓ Continuous 52,608-hour demand timeline
 
 ✓ NOAA weather ingestion
 
@@ -1228,30 +1654,88 @@ Raw datasets must be downloaded from the corresponding EIA and NOAA sources befo
 ✓ Target-leakage prevention
 
 ✓ Chronological train / validation / test splitting
+
+✓ 24-hour-ahead forecasting objective defined
+
+✓ Rolling-origin validation implemented
+
+✓ StatsForecast integration
+
+✓ 24-hour Seasonal Naive baseline
+
+✓ 168-hour Seasonal Naive baseline
+
+✓ MAE evaluation
+
+✓ RMSE evaluation
+
+✓ MAPE evaluation
+
+✓ Baseline performance comparison
+
+✓ Primary baseline established
 ```
 
 ---
 
-## Next Steps
+# Current Baseline Results
 
 ```text
-1. Create naive forecasting baselines
+24-Hour Seasonal Naive
 
-2. Evaluate 24-hour persistence
+MAE:  1,457.18 MW
+RMSE: 2,003.98 MW
+MAPE: 4.34%
+```
 
-3. Evaluate 168-hour persistence
+```text
+168-Hour Seasonal Naive
 
-4. Train Linear Regression
+MAE:  2,823.37 MW
+RMSE: 3,865.90 MW
+MAPE: 8.27%
+```
 
-5. Train tree-based models
+Current best baseline:
+
+```text
+24-Hour Seasonal Naive
+```
+
+---
+
+# Next Steps
+
+```text
+1. Train Linear Regression
+
+2. Evaluate Linear Regression on 2024 validation data
+
+3. Compare Linear Regression against the 24-hour baseline
+
+4. Train Random Forest
+
+5. Train Gradient Boosting
 
 6. Train XGBoost
 
-7. Compare model performance
+7. Compare all model performance
 
-8. Analyze feature importance
+8. Select the strongest validation model
 
-9. Visualize actual vs predicted demand
+9. Evaluate the selected model on untouched 2025 test data
+
+10. Analyze feature importance
+
+11. Analyze errors by hour of day
+
+12. Analyze errors by month and season
+
+13. Visualize actual vs predicted electricity demand
+
+14. Evaluate behavior during high-demand periods
+
+15. Document final model results
 ```
 
 ---
@@ -1300,7 +1784,7 @@ A future data-engineering version could use:
 
 ---
 
-# Future Improvements
+# Future Data Engineering Improvements
 
 Potential future improvements include:
 
@@ -1312,17 +1796,135 @@ Potential future improvements include:
 - Pipeline scheduling
 - Data-quality monitoring
 - Data lineage
+- Schema validation
+- Automated data refreshes
 - Model experiment tracking
 - Automated retraining
+- Model versioning
 - Forecast APIs
 - Interactive dashboards
 - Cloud deployment
+- Infrastructure as code
+
+---
+
+# Future Forecasting Improvements
+
+Potential forecasting improvements include:
+
 - More SPP weather stations
 - Additional weather variables
-- Cyclical calendar features
+- Cyclical hour features
+- Cyclical day-of-week features
+- Cyclical month features
 - Holiday features
 - Extreme-weather indicators
+- Heating-degree-day features
+- Cooling-degree-day features
+- Regional weather aggregates
+- Temperature-demand interaction features
+- Additional lag periods
+- Additional rolling windows
 - Forecast uncertainty intervals
+- Peak-demand prediction
+- Seasonal error analysis
+
+---
+
+# Forecasting Caveats
+
+The current project uses observed historical weather values for model development.
+
+For a true production day-ahead forecasting system, future weather observations would not yet be known.
+
+A production forecasting pipeline would therefore need to replace observed future weather with:
+
+```text
+weather forecasts
+```
+
+such as numerical weather prediction or forecast API data.
+
+Conceptually:
+
+```text
+Historical Training
+-------------------
+
+Actual Demand
++
+Observed Weather
+        │
+        ▼
+      Model
+
+
+Production Forecasting
+----------------------
+
+Historical Demand
++
+Future Weather Forecast
+        │
+        ▼
+      Model
+        │
+        ▼
+Next 24 Hours of Demand
+```
+
+This distinction will be important as the project moves from historical model evaluation toward a production-style forecasting architecture.
+
+---
+
+# Forecast Horizon Considerations
+
+Some engineered lag features require additional care in a real 24-hour-ahead forecasting environment.
+
+For example:
+
+```text
+demand_lag_1h
+```
+
+is available when predicting the next immediate hour.
+
+However, when forecasting all 24 future hours simultaneously, the actual demand one hour before later forecast horizons may not yet be known.
+
+Future versions of the project may address this using:
+
+- Horizon-specific models
+- Recursive forecasting
+- Direct multi-step forecasting
+- Lag restrictions based on forecast availability
+
+The current project will document feature availability carefully to avoid unrealistic forecasting assumptions.
+
+---
+
+# UTC and Local-Time Considerations
+
+The current pipeline uses:
+
+```text
+UTC
+```
+
+throughout the project.
+
+This provides consistent timestamps across electricity and weather datasets.
+
+However, electricity usage behavior is often strongly associated with local clock time.
+
+The Southwest Power Pool spans multiple geographic regions and time zones.
+
+A future improvement could therefore include:
+
+```text
+local-time calendar features
+```
+
+in addition to UTC-based features.
 
 ---
 
@@ -1337,10 +1939,33 @@ Project ML Forecast
         vs
 SPP Day-Ahead Forecast
         vs
+Seasonal Naive Baseline
+        vs
 Actual Demand
 ```
 
-This would provide a more realistic benchmark for evaluating the forecasting system.
+This would provide a more realistic industry benchmark for evaluating the forecasting system.
+
+---
+
+# Model Comparison Framework
+
+As additional models are trained, results will be recorded in a common comparison table.
+
+Current results:
+
+| Model | MAE | RMSE | MAPE |
+|---|---:|---:|---:|
+| **Seasonal Naive - 24 Hour** | **1,457.18 MW** | **2,003.98 MW** | **4.34%** |
+| Seasonal Naive - 168 Hour | 2,823.37 MW | 3,865.90 MW | 8.27% |
+| Linear Regression | TBD | TBD | TBD |
+| Random Forest | TBD | TBD | TBD |
+| Gradient Boosting | TBD | TBD | TBD |
+| XGBoost | TBD | TBD | TBD |
+
+The 2025 test dataset will remain untouched until model selection is complete.
+
+This prevents repeated model decisions from indirectly overfitting the final test period.
 
 ---
 
@@ -1359,9 +1984,20 @@ Electrical Power Systems
         +
 Data Engineering
         +
-Time-Series Analysis
+Time-Series Forecasting
         +
 Machine Learning
         +
 Cloud Data Architecture
+```
+
+The project also provides a foundation for exploring career paths at the intersection of:
+
+```text
+Energy Systems
+Power Grid Analytics
+Data Engineering
+Machine Learning
+Cloud Engineering
+Forecasting
 ```
