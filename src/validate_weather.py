@@ -152,6 +152,39 @@ def process_year(city_name, station_id, year):
         )
 
     # --------------------------------------------------
+    # Validate weather ranges
+    #
+    # NOAA files can occasionally contain malformed or
+    # physically unrealistic values. Convert those values
+    # to missing values so the normal gap-handling logic
+    # below can decide whether they should be interpolated.
+    # --------------------------------------------------
+
+    valid_ranges = {
+        "temperature": (-60, 60),
+        "dew_point_temperature": (-70, 40),
+        "relative_humidity": (0, 100),
+        "wind_speed": (0, 75)
+    }
+
+    for column, (minimum, maximum) in valid_ranges.items():
+
+        invalid = (
+            (df[column] < minimum)
+            | (df[column] > maximum)
+        )
+
+        invalid_count = invalid.sum()
+
+        if invalid_count > 0:
+            print(
+                f"Invalid {column} values replaced with NaN:",
+                invalid_count
+            )
+
+        df.loc[invalid, column] = pd.NA
+
+    # --------------------------------------------------
     # Assign each observation to an hour
     # --------------------------------------------------
 

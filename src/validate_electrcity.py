@@ -10,6 +10,20 @@ df = pd.read_csv(FILE_PATH)
 df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"])
 df["demand_mwh"] = pd.to_numeric(df["demand_mwh"], errors="coerce")
 
+
+# Replace unrealistic demand values with NaN
+invalid_demand = (
+    (df["demand_mwh"] < 0)
+    | (df["demand_mwh"] > 100000)
+)
+
+invalid_count = invalid_demand.sum()
+
+if invalid_count > 0:
+    print("Invalid demand values replaced with NaN:", invalid_count)
+
+df.loc[invalid_demand, "demand_mwh"] = pd.NA
+
 # Check duplicates
 duplicates = df["timestamp_utc"].duplicated().sum()
 
@@ -38,6 +52,7 @@ df = (
 )
 
 df.index.name = "timestamp_utc"
+
 
 # Interpolate missing demand values
 df["demand_mwh"] = df["demand_mwh"].interpolate(method="time")
