@@ -155,7 +155,39 @@ if "demand_mw" not in demand_history.columns:
     )
 
 
+# ------------------------------------------------------------
+# Make sure demand quality exists
+# ------------------------------------------------------------
+
+if "demand_quality" not in demand_history.columns:
+
+    raise ValueError(
+        "demand_quality column not found in demand history. "
+        "Run validate_electricity.py first."
+    )
+
+
+valid_quality_values = {
+    "valid",
+    "flatline"
+}
+
+unexpected_quality = set(
+    demand_history["demand_quality"]
+    .dropna()
+    .unique()
+) - valid_quality_values
+
+if unexpected_quality:
+
+    raise ValueError(
+        "Unexpected demand quality values found: "
+        f"{unexpected_quality}"
+    )
+
+
 print("Rows:", len(demand_history))
+
 print(
     "First timestamp:",
     demand_history["timestamp_utc"].min()
@@ -169,6 +201,13 @@ print(
 print(
     "Missing demand values:",
     demand_history["demand_mw"].isna().sum()
+)
+
+print("\nDemand quality counts:")
+
+print(
+    demand_history["demand_quality"]
+    .value_counts()
 )
 
 
@@ -192,7 +231,7 @@ missing_demand_timestamps = (
 )
 
 print(
-    "Missing timestamps in complete demand history:",
+    "\nMissing timestamps in complete demand history:",
     len(missing_demand_timestamps)
 )
 
@@ -231,6 +270,36 @@ print("Created:")
 print("- demand_lag_1h")
 print("- demand_lag_24h")
 print("- demand_lag_168h")
+
+
+# ============================================================
+# Create lag quality features
+# ============================================================
+
+print("\n" + "=" * 60)
+print("CREATING DEMAND QUALITY FEATURES")
+print("=" * 60)
+
+demand_history["demand_lag_1h_quality"] = (
+    demand_history["demand_quality"]
+    .shift(1)
+)
+
+demand_history["demand_lag_24h_quality"] = (
+    demand_history["demand_quality"]
+    .shift(24)
+)
+
+demand_history["demand_lag_168h_quality"] = (
+    demand_history["demand_quality"]
+    .shift(168)
+)
+
+print("Created:")
+print("- demand_quality")
+print("- demand_lag_1h_quality")
+print("- demand_lag_24h_quality")
+print("- demand_lag_168h_quality")
 
 
 # ============================================================
@@ -293,13 +362,23 @@ print(
 
 
 # ============================================================
-# Keep only timestamp + engineered demand features
+# Keep timestamp + engineered demand features + quality
 # ============================================================
 
 demand_features = demand_history[
     [
         "timestamp_utc",
-        *demand_feature_columns
+
+        # Current target quality
+        "demand_quality",
+
+        # Demand features
+        *demand_feature_columns,
+
+        # Lag quality
+        "demand_lag_1h_quality",
+        "demand_lag_24h_quality",
+        "demand_lag_168h_quality"
     ]
 ].copy()
 
@@ -366,27 +445,207 @@ print("\n" + "=" * 60)
 print("REMOVING INCOMPLETE FEATURE ROWS")
 print("=" * 60)
 
-rows_before_filtering = len(df)
+rows_before_history_filter = len(df)
 
 df = df.dropna(
     subset=demand_feature_columns
 ).copy()
 
-rows_after_filtering = len(df)
+rows_after_history_filter = len(df)
 
 print(
     "Rows before filtering:",
-    rows_before_filtering
+    rows_before_history_filter
 )
 
 print(
-    "Rows removed:",
-    rows_before_filtering - rows_after_filtering
+    "Rows removed for insufficient history:",
+    rows_before_history_filter
+    - rows_after_history_filter
 )
 
 print(
     "Rows remaining:",
-    rows_after_filtering
+    rows_after_history_filter
+)
+
+
+# ============================================================
+# Remove rows affected by flatline demand data
+# ============================================================
+
+print("\n" + "=" * 60)
+print("FILTERING DEMAND QUALITY")
+print("=" * 60)
+
+rows_before_quality_filter = len(df)
+
+
+# ------------------------------------------------------------
+# Count each reason separately before removing rows
+# ------------------------------------------------------------
+
+bad_target = (
+    df["demand_quality"] != "valid"
+)
+
+bad_lag_24h = (
+    df["demand_lag_24h_quality"] != "valid"
+)
+
+bad_lag_168h = (
+    df["demand_lag_168h_quality"] != "valid"
+)
+
+
+print(
+    "Rows with invalid target demand:",
+    bad_target.sum()
+)
+
+print(
+    "Rows with invalid 24h lag:",
+    bad_lag_24h.sum()
+)
+
+print(
+    "Rows with invalid 168h lag:",
+    bad_lag_168h.sum()
+)
+
+
+# ------------------------------------------------------------
+# A row is usable only if all three are valid
+# ------------------------------------------------------------
+
+valid_demand_row = (
+    (~bad_target)
+    & (~bad_lag_24h)
+    & (~bad_lag_168h)
+)
+
+df = df[
+    valid_demand_row
+].copy()
+
+
+rows_after_quality_filter = len(df)
+
+print(
+    "\nRows removed because of demand quality:",
+    rows_before_quality_filter
+    - rows_after_quality_filter
+)
+
+print(
+    "Rows remaining after demand QC:",
+    rows_after_quality_filter
+)
+
+
+# ============================================================
+# Quality removals by year
+# ============================================================
+
+quality_check = demand_features.copy()
+
+quality_check["year"] = (
+    quality_check["timestamp_utc"]
+    .dt.year
+)
+
+quality_check["invalid_target"] = (
+    quality_check["demand_quality"] != "valid"
+)
+
+quality_check["invalid_lag_24h"] = (
+    quality_check["demand_lag_24h_quality"] != "valid"
+)
+
+quality_check["invalid_lag_168h"] = (
+    quality_check["demand_lag_168h_quality"] != "valid"
+)
+
+quality_check["invalid_for_modeling"] = (
+    quality_check["invalid_target"]
+    | quality_check["invalid_lag_24h"]
+    | quality_check["invalid_lag_168h"]
+)
+
+print("\nDemand quality issues by year:")
+
+quality_summary = (
+    quality_check
+    .groupby("year")
+    .agg(
+        invalid_target=(
+            "invalid_target",
+            "sum"
+        ),
+        invalid_lag_24h=(
+            "invalid_lag_24h",
+            "sum"
+        ),
+        invalid_lag_168h=(
+            "invalid_lag_168h",
+            "sum"
+        ),
+        invalid_for_modeling=(
+            "invalid_for_modeling",
+            "sum"
+        )
+    )
+)
+
+print(
+    quality_summary.to_string()
+)
+
+
+# ============================================================
+# Verify no bad demand quality remains
+# ============================================================
+
+remaining_bad_target = (
+    df["demand_quality"] != "valid"
+).sum()
+
+remaining_bad_24h = (
+    df["demand_lag_24h_quality"] != "valid"
+).sum()
+
+remaining_bad_168h = (
+    df["demand_lag_168h_quality"] != "valid"
+).sum()
+
+if (
+    remaining_bad_target > 0
+    or remaining_bad_24h > 0
+    or remaining_bad_168h > 0
+):
+
+    raise ValueError(
+        "Invalid demand-quality rows remain "
+        "after filtering."
+    )
+
+
+# ============================================================
+# Remove quality helper columns
+# ============================================================
+
+# These columns were needed to perform QC,
+# but the model itself should not learn from them.
+
+quality_columns = [
+    "demand_quality",
+    "demand_lag_1h_quality",
+    "demand_lag_24h_quality",
+    "demand_lag_168h_quality"
+]
+
+df = df.drop(
+    columns=quality_columns
 )
 
 
@@ -458,6 +717,32 @@ print(
     df["split"]
     .value_counts()
 )
+
+
+# ============================================================
+# Split counts with percentages
+# ============================================================
+
+print("\nFinal split percentages:")
+
+split_counts = (
+    df["split"]
+    .value_counts()
+)
+
+for split_name, count in split_counts.items():
+
+    percentage = (
+        count
+        / len(df)
+        * 100
+    )
+
+    print(
+        f"{split_name}: "
+        f"{count} rows "
+        f"({percentage:.2f}%)"
+    )
 
 
 # ============================================================

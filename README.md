@@ -1,8 +1,8 @@
 # SPP Electricity Demand Forecasting
 
-An end-to-end data engineering and machine learning project for forecasting hourly electricity demand across the Southwest Power Pool (SPP) region using historical electricity demand, weather observations, temporal features, and lagged demand.
+An end-to-end data engineering and machine learning project for forecasting hourly electricity demand across the Southwest Power Pool (SPP) region using historical electricity demand, regional weather observations, calendar features, and lagged demand.
 
-The project combines **electrical power systems, data engineering, time-series forecasting, and machine learning** to explore how historical grid behavior and environmental conditions can be used to predict future electricity consumption.
+The project combines **electrical power systems, data engineering, time-series forecasting, and machine learning** to explore how historical grid behavior and environmental conditions can be used to predict future electricity consumption. :contentReference[oaicite:0]{index=0}
 
 ---
 
@@ -23,16 +23,18 @@ Accurate demand forecasting helps power-system operators plan generation, mainta
 
 This project builds a reproducible pipeline that:
 
-1. Extracts historical electricity demand.
-2. Processes hourly weather data.
-3. Detects and handles data-quality issues.
+1. Extracts historical SPP electricity demand from EIA data.
+2. Processes hourly weather observations from NOAA.
+3. Detects missing, unrealistic, and suspicious values.
 4. Combines electricity and weather observations.
-5. Engineers time-series forecasting features.
-6. Splits data chronologically.
-7. Creates realistic rolling forecasting baselines.
-8. Trains machine-learning models.
-9. Evaluates models using consistent metrics.
-10. Investigates unexpected model behavior to identify upstream data-quality problems.
+5. Engineers calendar and historical-demand features.
+6. Splits data chronologically to prevent future information from entering model training.
+7. Establishes forecasting baselines.
+8. Trains Linear Regression, Random Forest, and XGBoost models.
+9. Tunes XGBoost using a dedicated validation year.
+10. Retrains the selected model using all available pre-test data.
+11. Evaluates the final model on a held-out 2025 test period.
+12. Uses model-error analysis to identify additional upstream data-quality problems.
 
 ---
 
@@ -41,64 +43,58 @@ This project builds a reproducible pipeline that:
 ```text
                          DATA SOURCES
                               │
-               ┌──────────────┴──────────────┐
-               │                             │
-               ▼                             ▼
-         U.S. EIA Data                  NOAA GHCNh
-         SPP Demand                     Weather Data
-               │                             │
-               ▼                             ▼
-       Demand Extraction              Weather Processing
-               │                             │
-               ▼                             ▼
-       Demand Validation              Weather Validation
-               │                             │
-               ▼                             ▼
-     Range / Quality Checks         Range / Quality Checks
-               │                             │
-               ▼                             ▼
-     Missing-Value Handling        Short-Gap Interpolation
-               │                             │
-               └──────────────┬──────────────┘
+                ┌─────────────┴─────────────┐
+                │                           │
+                ▼                           ▼
+          U.S. EIA Data                 NOAA GHCNh
+          SPP Demand                    Weather Data
+                │                           │
+                ▼                           ▼
+        Demand Extraction             Weather Processing
+                │                           │
+                ▼                           ▼
+        Demand Validation             Weather Validation
+                │                           │
+                ▼                           ▼
+       Range + Temporal QC          Range + Missing QC
+                │                           │
+                └─────────────┬─────────────┘
                               │
                               ▼
                        Dataset Builder
                               │
                               ▼
-                    Modeling Dataset
-                              │
-                ┌─────────────┴─────────────┐
-                │                           │
-                ▼                           ▼
-       Complete Demand History       Weather + Demand
-                │                           │
-                ▼                           │
-       Lag / Rolling Features               │
-                │                           │
-                └─────────────┬─────────────┘
+                       Modeling Dataset
                               │
                               ▼
-                    Feature Engineering
+                      Feature Engineering
                               │
                               ▼
-                 Chronological Splitting
+                  Chronological Data Split
                               │
                 ┌─────────────┼─────────────┐
                 ▼             ▼             ▼
-             TRAIN       VALIDATION        TEST
-           2020-2023        2024           2025
-                │
-                ▼
-       Forecasting Baselines
-                │
-                ▼
-       Machine Learning Models
-                │
-                ▼
-         Model Evaluation
-                │
-                ▼
-        Forecast Comparison
+              TRAIN       VALIDATION       TEST
+            2020-2023        2024          2025
+                │             │
+                └──────┬──────┘
+                       ▼
+               Model Development
+                       │
+                       ▼
+               XGBoost Tuning
+                       │
+                       ▼
+              Best Model Selected
+                       │
+                       ▼
+             Retrain on 2020-2024
+                       │
+                       ▼
+                 Test on 2025
+                       │
+                       ▼
+               Final Evaluation
 ```
 
 ---
@@ -127,25 +123,23 @@ through
 December 31, 2025
 ```
 
-All timestamps are processed in:
+All timestamps are processed in UTC.
 
-```text
-UTC
-```
-
-After extraction and validation, the complete demand dataset contains:
+The complete validated demand timeline contains:
 
 ```text
 52,608 hourly observations
 ```
 
-The validated demand timeline contains:
+with:
 
 ```text
 Missing demand values: 0
-Missing timestamps: 0
-Duplicate timestamps: 0
+Missing timestamps:    0
+Duplicate timestamps:  0
 ```
+
+The original project used a continuous hourly EIA demand series and a project-level range check of 0–100,000 MW to identify grossly corrupted measurements. :contentReference[oaicite:1]{index=1} :contentReference[oaicite:2]{index=2}
 
 ---
 
@@ -157,16 +151,22 @@ Electricity-demand validation is performed by:
 src/validate_electricity.py
 ```
 
-The script performs:
+The validation pipeline performs:
 
 - Timestamp parsing
 - Numeric conversion
 - Duplicate detection
 - Missing timestamp detection
-- Reindexing onto the complete expected hourly timeline
-- Missing-value interpolation
+- Reindexing onto the expected hourly timeline
 - Demand-range validation
-- Final dataset validation
+- Isolated missing-value interpolation
+- Temporal flatline detection
+- Demand-quality labeling
+- Final timeline validation
+
+---
+
+# Demand Range Validation
 
 A project-level physical plausibility check is used to detect obviously corrupted demand measurements.
 
@@ -176,64 +176,204 @@ Values outside:
 0 MW to 100,000 MW
 ```
 
-are treated as invalid and converted to missing values before interpolation.
+are treated as invalid before interpolation.
 
-This threshold is used as a project-level sanity check for gross data corruption rather than as an official EIA quality-control limit.
+This is a practical project-level sanity check rather than an official EIA quality-control threshold.
 
----
-
-# Electricity Data Quality Issue Discovered
-
-During Random Forest model development, the model produced an extreme forecast of approximately:
+One major corrupted observation discovered during model development was:
 
 ```text
-966,023 MW
-```
-
-while normal SPP demand values were only in the tens of thousands of MW.
-
-Further investigation showed that the training target contained:
-
-```text
-Timestamp: 2023-06-13 02:00:00
+Timestamp: 2023-06-13 02:00 UTC
 Demand:    3,621,097 MW
 ```
 
-The surrounding demand values were:
+while neighboring observations were approximately 28,000–34,000 MW.
+
+This observation was converted to missing and repaired using the existing time-interpolation pipeline.
+
+The discovery demonstrated that checking only for missing values, duplicate timestamps, and missing timestamps is not enough for real-world data. The original README documented this corrupted observation and how model behavior exposed the upstream problem. :contentReference[oaicite:3]{index=3}
+
+---
+
+# Temporal Demand Quality Validation
+
+A second and more subtle electricity-data problem was discovered during final model evaluation.
+
+Some demand measurements remained within physically reasonable ranges but repeated the **exact same demand value for unusually long periods**.
+
+Examples included runs lasting:
 
 ```text
-2023-06-12 23:00   33,604 MW
-2023-06-13 00:00   33,639 MW
-2023-06-13 01:00   33,011 MW
-2023-06-13 02:00   3,621,097 MW
-2023-06-13 03:00   31,086 MW
-2023-06-13 04:00   29,565 MW
-2023-06-13 05:00   27,647 MW
+12 hours
+24 hours
+48 hours
+62 hours
+82 hours
+96 hours
+133 hours
+155 hours
 ```
 
-This clearly indicated a corrupted isolated observation.
-
-The validation pipeline was updated to detect unrealistic demand values before interpolation.
-
-The corrupted value was replaced with a missing value and interpolated between its neighboring hourly observations.
-
-This issue demonstrated that model failures can expose data-quality problems that are not detected by checking only for:
+These values would pass ordinary checks because they were:
 
 ```text
-missing values
-duplicate timestamps
-missing timestamps
+numeric
+non-missing
+within the valid demand range
+associated with valid timestamps
 ```
+
+but the temporal behavior was suspicious.
+
+The demand-validation pipeline was therefore expanded to detect consecutive identical demand observations.
+
+### Detection Rule
+
+Runs of at least:
+
+```text
+6 consecutive identical hourly observations
+```
+
+are reported for inspection.
+
+Runs of at least:
+
+```text
+12 consecutive identical hourly observations
+```
+
+are automatically labeled:
+
+```text
+demand_quality = "flatline"
+```
+
+All other observations are labeled:
+
+```text
+demand_quality = "valid"
+```
+
+The 12-hour threshold is a project-level temporal quality-control rule and is not an official EIA threshold.
+
+Long flatlines are **not interpolated** because replacing multi-hour or multi-day sequences with synthetic demand would introduce a large amount of artificial target data.
+
+Instead, they remain in the validated demand dataset with an explicit quality label and are excluded later from model training and evaluation.
+
+---
+
+# Demand Quality Results
+
+Across the complete 2020–2025 demand timeline:
+
+```text
+Valid demand observations:      51,327
+Flagged flatline observations:   1,281
+Total observations:             52,608
+```
+
+This was an important finding because the demand series could contain:
+
+```text
+0 missing values
+0 missing timestamps
+0 duplicate timestamps
+```
+
+while still containing substantial temporal data-quality problems.
+
+---
+
+# Lag Quality Propagation
+
+Demand quality must also be considered when creating historical-demand features.
+
+The supervised models use:
+
+```text
+demand_lag_24h
+demand_lag_168h
+```
+
+A current target can be valid while one of its lagged inputs points to a previously flagged flatline.
+
+For example:
+
+```text
+Current demand       = valid
+Demand 24 hours ago  = flatline
+```
+
+Using that observation would still introduce suspicious demand information into the model.
+
+The feature-engineering pipeline therefore tracks quality for the current target and its historical lag sources.
+
+A modeling observation is retained only when:
+
+```text
+current target quality = valid
+24-hour lag quality    = valid
+168-hour lag quality   = valid
+```
+
+This causes more modeling rows to be removed than the number of directly flagged target observations.
+
+---
+
+# Demand Quality Filtering Results
+
+After removing rows with insufficient history:
+
+```text
+Rows before demand QC: 52,290
+```
+
+Quality checks identified:
+
+```text
+Rows with invalid target demand: 1,267
+Rows with invalid 24h lag:       1,264
+Rows with invalid 168h lag:      1,281
+```
+
+Because some observations violate multiple conditions, these counts overlap.
+
+Total rows removed because of demand quality:
+
+```text
+2,859
+```
+
+Final feature dataset:
+
+```text
+49,431 rows
+32 columns
+0 missing values
+0 duplicate timestamps
+```
+
+Demand-quality issues affecting modeling by year:
+
+| Year | Invalid Target | Invalid 24h Lag | Invalid 168h Lag | Invalid for Modeling |
+|---|---:|---:|---:|---:|
+| 2020 | 36 | 60 | 204 | 261 |
+| 2021 | 127 | 127 | 127 | 264 |
+| 2022 | 0 | 0 | 0 | 0 |
+| 2023 | 12 | 12 | 12 | 36 |
+| 2024 | 396 | 396 | 396 | 847 |
+| 2025 | 710 | 710 | 710 | 1,636 |
+
+The later years, particularly 2024 and 2025, contained substantially more suspicious flatline behavior.
 
 ---
 
 # Weather Data
 
-Weather observations are sourced from NOAA's:
+Weather observations are sourced from NOAA's **Global Historical Climatology Network Hourly (GHCNh)**.
 
-**Global Historical Climatology Network Hourly (GHCNh)**
-
-Because the Southwest Power Pool spans a large geographic area, the project uses several representative weather stations rather than relying on a single location.
+Because SPP covers a large geographic area, five representative weather locations are used:
 
 | Location | NOAA Station |
 |---|---|
@@ -243,7 +383,7 @@ Because the Southwest Power Pool spans a large geographic area, the project uses
 | Omaha | USW00014942 |
 | Fargo | USW00014914 |
 
-Weather features currently include:
+Weather features include:
 
 ```text
 temperature
@@ -252,96 +392,50 @@ relative_humidity
 wind_speed
 ```
 
-Weather measurements from each station are preserved separately in the final dataset.
-
-For example:
-
-```text
-kc_temperature
-wichita_temperature
-oklahoma_temperature
-omaha_temperature
-fargo_temperature
-```
-
-This allows the machine-learning models to learn regional weather patterns across the SPP footprint instead of relying on one averaged weather value.
+Measurements from each station remain separate rather than being averaged together so that the models can learn regional weather differences. :contentReference[oaicite:4]{index=4}
 
 ---
 
-# Weather Processing
+# Weather Processing and Validation
 
-Raw NOAA GHCNh data can contain multiple observations within the same hour.
+NOAA GHCNh can contain multiple observations during an hour.
 
-For example:
-
-```text
-00:00
-00:53
-01:00
-01:53
-```
-
-The weather pipeline converts this data into one representative observation per hour.
-
-For each station and year, the pipeline:
+The pipeline:
 
 1. Parses NOAA timestamps.
-2. Converts weather columns to numeric values.
-3. Checks weather values for physical plausibility.
-4. Floors timestamps into hourly intervals.
-5. Calculates each observation's distance from minute `:53`.
-6. Selects the observation closest to `:53`.
-7. Normalizes the selected timestamp to the top of the hour.
-8. Reindexes the dataset onto a complete hourly timeline.
-9. Detects missing observations.
-10. Interpolates only short gaps.
-11. Preserves long gaps as missing.
-12. Validates final timestamps and duplicate counts.
+2. Converts weather measurements to numeric values.
+3. Applies physical plausibility checks.
+4. Groups observations into hourly intervals.
+5. Selects the observation closest to minute `:53`.
+6. Normalizes the selected observation to the top of the hour.
+7. Reindexes onto a complete hourly timeline.
+8. Detects missing observations.
+9. Interpolates short gaps.
+10. Preserves long gaps.
+11. Validates timestamps and duplicates.
 
-NOAA GHCNh timestamps are treated as:
-
-```text
-UTC
-```
-
-The timestamp normalization performed by the project is hourly binning, not a timezone conversion.
+NOAA timestamps are treated as UTC.
 
 ---
 
 # Weather Range Validation
 
-Initial weather validation only checked:
+Model-error analysis also exposed corrupted NOAA observations.
 
-```text
-missing observations
-duplicate timestamps
-missing timestamps
-```
-
-During Linear Regression testing, the model produced an impossible prediction of approximately:
+An early Linear Regression model produced a physically impossible forecast of approximately:
 
 ```text
 -2,997,113 MW
 ```
 
-Investigation of the corresponding input features revealed corrupted Omaha weather observations, including values such as:
+Investigation revealed weather values including:
 
 ```text
 Temperature:       -61.0 °C
 Relative humidity: 31,287%
 ```
 
-This showed that a dataset can contain:
-
-```text
-no missing values
-```
-
-while still containing invalid measurements.
-
-Weather validation was therefore expanded to include project-level physical plausibility checks.
-
-Current validation ranges are:
+The weather-validation pipeline was expanded with project-level physical plausibility checks:
 
 | Feature | Valid Range |
 |---|---:|
@@ -350,37 +444,23 @@ Current validation ranges are:
 | Relative Humidity | 0% to 100% |
 | Wind Speed | 0 to 75 m/s |
 
-Values outside these ranges are converted to missing values before the existing interpolation logic is applied.
+Values outside these ranges are converted to missing before interpolation.
 
-These ranges are practical project-level sanity bounds intended to catch gross data corruption. They are not official NOAA quality-control thresholds.
+These bounds are practical sanity checks rather than official NOAA QC thresholds. :contentReference[oaicite:5]{index=5}
 
 ---
 
 # Missing Weather Strategy
 
-Small weather-data gaps are reasonable to interpolate.
-
-However, interpolating across long multi-day gaps could create artificial weather measurements.
-
-The project therefore uses:
+Only short weather gaps are interpolated.
 
 ```text
 Maximum interpolation gap: 6 hours
 ```
 
-Any missing sequence longer than six consecutive hours remains missing.
+Longer missing sequences remain missing rather than creating artificial multi-day weather patterns.
 
-This prevents the weather preprocessing pipeline from creating unrealistic values over large reporting gaps.
-
-Isolated invalid observations detected by the range-validation checks can therefore be repaired using the same short-gap interpolation process.
-
----
-
-# NOAA Reporting Gap
-
-A significant multi-day reporting gap was discovered across several weather stations in 2025.
-
-The outage occurred approximately around:
+A significant reporting gap was observed across several weather stations around:
 
 ```text
 August 29, 2025
@@ -388,28 +468,9 @@ through
 September 2, 2025
 ```
 
-Because several stations experienced similar missing periods, these values are not blindly interpolated.
+These observations were not blindly interpolated.
 
-Instead, the affected observations remain missing until the final modeling dataset is created.
-
----
-
-# Processed Weather Dataset Validation
-
-Each processed station dataset contains the full expected hourly timeline:
-
-```text
-52,608 rows
-```
-
-with:
-
-```text
-Missing timestamps: 0
-Duplicate timestamps: 0
-```
-
-Remaining missing weather rows after range validation and short-gap interpolation:
+Remaining missing weather rows after processing:
 
 | Station | Rows With Missing Weather |
 |---|---:|
@@ -418,6 +479,8 @@ Remaining missing weather rows after range validation and short-gap interpolatio
 | Oklahoma City | 90 |
 | Omaha | 103 |
 | Fargo | 110 |
+
+The six-hour interpolation strategy and station-level missing counts were established during weather preprocessing. :contentReference[oaicite:6]{index=6} :contentReference[oaicite:7]{index=7}
 
 ---
 
@@ -429,114 +492,38 @@ The script:
 src/build_dataset.py
 ```
 
-combines the processed electricity-demand dataset with all five weather datasets.
-
-All datasets are joined using:
+combines SPP demand with all five processed weather datasets using:
 
 ```text
 timestamp_utc
 ```
 
-The join is validated as:
+Joins are validated as:
 
 ```text
 one-to-one
 ```
 
-to prevent duplicate observations from silently appearing in the modeling dataset.
+to prevent duplicate observations from silently entering the modeling dataset.
 
----
-
-# Modeling Dataset
-
-Before filtering incomplete weather observations:
+Before weather filtering:
 
 ```text
-Rows: 52,608
-Columns: 22
+Rows:                 52,608
+Columns:              22
 Duplicate timestamps: 0
-Missing demand values: 0
+Missing demand:       0
 ```
 
-The dataset contains:
-
-```text
-1 timestamp
-1 electricity demand target
-20 weather variables
-```
-
-for a total of:
-
-```text
-22 columns
-```
-
----
-
-## Missing Weather Filtering
-
-After combining the five stations, the pipeline identifies every row containing at least one missing weather feature.
-
-Results:
+After filtering timestamps with incomplete weather:
 
 ```text
 Rows before filtering: 52,608
-Rows removed: 150
-Final modeling rows: 52,458
-Remaining missing values: 0
-Duplicate timestamps: 0
+Rows removed:             150
+Modeling rows:         52,458
 ```
 
-Only approximately:
-
-```text
-0.29%
-```
-
-of the original timeline is removed.
-
-The final modeling dataset is saved as:
-
-```text
-data/processed/modeling_dataset.csv
-```
-
----
-
-# Modeling Dataset Features
-
-The base modeling dataset contains:
-
-```text
-timestamp_utc
-demand_mw
-
-kc_temperature
-kc_dew_point_temperature
-kc_relative_humidity
-kc_wind_speed
-
-wichita_temperature
-wichita_dew_point_temperature
-wichita_relative_humidity
-wichita_wind_speed
-
-oklahoma_temperature
-oklahoma_dew_point_temperature
-oklahoma_relative_humidity
-oklahoma_wind_speed
-
-omaha_temperature
-omaha_dew_point_temperature
-omaha_relative_humidity
-omaha_wind_speed
-
-fargo_temperature
-fargo_dew_point_temperature
-fargo_relative_humidity
-fargo_wind_speed
-```
+Only approximately 0.29% of the original timeline is removed because of incomplete weather. :contentReference[oaicite:8]{index=8}
 
 ---
 
@@ -548,90 +535,18 @@ Feature engineering is performed by:
 src/feature_engineering.py
 ```
 
-The feature-engineering pipeline creates three major categories of features:
+The pipeline creates:
 
-1. Calendar features
-2. Lagged electricity-demand features
-3. Rolling electricity-demand features
-
----
-
-# Calendar Features
-
-The following features are extracted from:
-
-```text
-timestamp_utc
-```
-
-## Hour
+### Calendar Features
 
 ```text
 hour
-```
-
-Values:
-
-```text
-0-23
-```
-
-This helps the model learn daily electricity-use patterns.
-
-## Day of Week
-
-```text
 day_of_week
-```
-
-Values:
-
-```text
-0 = Monday
-1 = Tuesday
-2 = Wednesday
-3 = Thursday
-4 = Friday
-5 = Saturday
-6 = Sunday
-```
-
-## Month
-
-```text
 month
-```
-
-Values:
-
-```text
-1-12
-```
-
-This helps capture seasonal electricity-demand behavior.
-
-## Weekend Indicator
-
-```text
 is_weekend
 ```
 
-Values:
-
-```text
-0 = weekday
-1 = weekend
-```
-
-This helps model differences between weekday and weekend electricity usage.
-
----
-
-# Demand Lag Features
-
-Historical electricity demand is one of the strongest predictors of future demand.
-
-The pipeline creates:
+### Demand Lag Features
 
 ```text
 demand_lag_1h
@@ -639,210 +554,96 @@ demand_lag_24h
 demand_lag_168h
 ```
 
-These represent:
+### Rolling Demand Features
 
 ```text
-demand_lag_1h
-= electricity demand exactly 1 hour earlier
-
-demand_lag_24h
-= electricity demand exactly 24 hours earlier
-
-demand_lag_168h
-= electricity demand exactly 7 days earlier
+demand_rolling_24h
+demand_rolling_168h
 ```
 
 ---
 
 # Timestamp-Aware Demand Engineering
 
-The final modeling dataset has timestamps removed because of incomplete weather observations.
+Weather filtering removes some timestamps from the modeling dataset.
 
-Because of this, directly calculating:
+Therefore:
 
 ```python
 df["demand_mw"].shift(24)
 ```
 
-on the filtered modeling dataset would not always represent exactly 24 hours earlier.
-
-For example:
+on the filtered dataset would not always mean:
 
 ```text
-24 rows earlier
+exactly 24 clock-hours earlier
 ```
 
-would not necessarily equal:
-
-```text
-24 clock-hours earlier
-```
-
-after a weather observation has been removed.
-
-To prevent this issue, all demand-history features are calculated from the original complete electricity-demand dataset:
-
-```text
-swpp_demand_2020_2025.csv
-```
-
-which contains the uninterrupted:
-
-```text
-52,608-hour timeline
-```
-
-The engineered demand features are then merged back onto the cleaned modeling dataset using:
+Demand-history features are instead calculated using the original complete 52,608-hour demand timeline and merged back into the modeling dataset by:
 
 ```text
 timestamp_utc
 ```
 
-This ensures that:
-
-```text
-demand_lag_24h
-```
-
-actually represents electricity demand exactly 24 hours earlier.
+This guarantees that `demand_lag_24h` really represents demand exactly 24 hours earlier. :contentReference[oaicite:9]{index=9}
 
 ---
 
-# Rolling Demand Features
+# Forecast-Time Feature Availability
 
-The pipeline also creates rolling historical demand averages:
+The project creates additional features such as:
 
 ```text
+demand_lag_1h
 demand_rolling_24h
 demand_rolling_168h
 ```
 
-These represent average electricity demand over:
+but the first direct day-ahead machine-learning models intentionally exclude them.
+
+The forecasting objective is to predict the next 24 hourly values at once.
+
+For later hours in that forecast horizon, a target-relative one-hour lag or rolling window could require demand observations that would not yet exist when the forecast is issued.
+
+The primary supervised feature set therefore uses:
 
 ```text
-Previous 24 hours
-Previous 168 hours
+Calendar features
+24-hour demand lag
+168-hour demand lag
+Regional weather variables
 ```
 
----
-
-## Preventing Target Leakage
-
-Rolling averages are shifted before the rolling calculation.
-
-Example:
-
-```python
-demand_history["demand_rolling_24h"] = (
-    demand_history["demand_mw"]
-    .shift(1)
-    .rolling(window=24)
-    .mean()
-)
-```
-
-The current target value is therefore never included in its own rolling feature.
-
-This prevents direct:
-
-```text
-target leakage
-```
-
-during feature construction.
+This keeps the historical-demand inputs available across the complete 24-hour forecasting horizon.
 
 ---
 
 # Final Feature Dataset
 
-After feature engineering:
+After insufficient-history and demand-quality filtering:
 
 ```text
-Initial modeling rows: 52,458
-Rows removed for insufficient demand history: 168
-Final rows: 52,290
-Final columns: 32
-Missing values: 0
+Rows:                 49,431
+Columns:              32
+Missing values:       0
 Duplicate timestamps: 0
+
+First timestamp:
+2020-01-08 00:00 UTC
+
+Last timestamp:
+2025-12-31 23:00 UTC
 ```
 
-The first usable observation is:
-
-```text
-2020-01-08 00:00:00
-```
-
-because the 168-hour weekly lag requires one complete week of previous demand history.
-
-The final timestamp is:
-
-```text
-2025-12-31 23:00:00
-```
-
-The final dataset is saved as:
-
-```text
-data/processed/feature_dataset.csv
-```
+The first usable observation occurs one week into 2020 because the 168-hour lag requires a complete week of historical demand.
 
 ---
 
-# Final Features
+# Chronological Data Splitting
 
-The full feature dataset contains:
+Electricity demand is a time series, so random train/test splitting is not used.
 
-```text
-timestamp_utc
-demand_mw
-
-kc_temperature
-kc_dew_point_temperature
-kc_relative_humidity
-kc_wind_speed
-
-wichita_temperature
-wichita_dew_point_temperature
-wichita_relative_humidity
-wichita_wind_speed
-
-oklahoma_temperature
-oklahoma_dew_point_temperature
-oklahoma_relative_humidity
-oklahoma_wind_speed
-
-omaha_temperature
-omaha_dew_point_temperature
-omaha_relative_humidity
-omaha_wind_speed
-
-fargo_temperature
-fargo_dew_point_temperature
-fargo_relative_humidity
-fargo_wind_speed
-
-hour
-day_of_week
-month
-is_weekend
-
-demand_lag_1h
-demand_lag_24h
-demand_lag_168h
-
-demand_rolling_24h
-demand_rolling_168h
-
-split
-```
-
----
-
-# Train / Validation / Test Strategy
-
-Because electricity demand is a time series, the project does not use a random train/test split.
-
-Instead, observations are split chronologically.
+Initial model development uses:
 
 ```text
 2020 ─┐
@@ -855,125 +656,843 @@ Instead, observations are split chronologically.
 2025 ─── TEST
 ```
 
-Final feature-dataset split sizes:
+After final quality filtering:
 
 ```text
-Train:       34,885
-Validation:   8,775
-Test:         8,630
+Train (2020-2023):  34,492 rows
+Validation (2024):   7,928 rows
+Test (2025):         7,011 rows
 ```
 
-For the complete electricity-demand series used by the forecasting baselines:
+Total:
 
 ```text
-Training:    35,064 hours
-Validation:   8,784 hours
-Test:         8,760 hours
+49,431 modeling observations
 ```
 
-The difference occurs because the feature dataset removes observations with insufficient lag history or incomplete weather features, while the baseline models operate on the complete validated electricity-demand timeline.
+Chronological splitting ensures that models learn from earlier observations before being evaluated on later observations, rather than allowing future demand behavior into training. The original design used the same chronological 2020–2023 / 2024 / 2025 structure. :contentReference[oaicite:10]{index=10}
 
 ---
 
-# Why Chronological Splitting Matters
+# Test-Set Methodology Note
 
-A random train/test split could allow the model to train on future electricity-demand behavior while evaluating on older observations.
+The 2025 period was originally intended to remain completely untouched during model development.
 
-That would not represent a realistic forecasting environment.
+During an earlier 2025 evaluation, however, error analysis exposed long sequences of suspicious repeated demand measurements. This motivated the temporal flatline quality-control rule.
 
-The chronological split ensures:
+The QC rule was then applied **uniformly across the entire 2020–2025 dataset**, rather than selectively removing 2025 errors.
+
+Model selection and hyperparameter tuning continued to use the 2024 validation period rather than 2025.
+
+For this reason, 2025 is described as the project's:
 
 ```text
-past data → predicts future data
+held-out final evaluation period
 ```
 
-which better reflects how electricity-demand forecasting systems operate in practice.
+rather than claiming that it remained completely untouched throughout development.
 
-The 2025 dataset remains untouched during model development and model selection.
+No additional hyperparameter or preprocessing changes are made based on the final cleaned 2025 performance.
 
 ---
 
 # Forecasting Objective
 
-The primary forecasting objective is:
+The primary objective is:
 
 ```text
 24-hour-ahead hourly electricity-demand forecasting
 ```
 
-The goal is to predict the next 24 hourly electricity-demand values.
-
-Conceptually:
+The model estimates the next 24 hourly SPP demand values using:
 
 ```text
-Historical Demand + Weather + Time Features
-                    │
-                    ▼
-           Forecast Next 24 Hours
+Historical Demand
+       +
+Regional Weather
+       +
+Calendar Information
+       ↓
+24-Hour Demand Forecast
 ```
-
-This resembles a day-ahead forecasting problem used in electric-grid operations.
 
 ---
 
-# Rolling Forecast Evaluation
+# Important Weather Limitation
 
-A single Seasonal Naive forecast from the end of 2023 through all of 2024 would not represent a realistic day-ahead forecasting system.
+The historical evaluation currently uses **observed target-time weather**.
 
-For example, a forecast for July 2024 should be allowed to use actual observations from earlier in 2024.
+That means the model receives the weather conditions that actually occurred during the historical forecast period.
 
-The baseline models therefore use:
+In a real production day-ahead forecasting system, those observations would not yet be available.
 
-```text
-rolling-origin evaluation
-```
-
-also known as:
+A production implementation would instead require:
 
 ```text
-walk-forward validation
+weather forecasts available at forecast issue time
 ```
 
-The baseline evaluation process behaves like:
+Therefore, current weather inputs should be interpreted as **oracle/proxy weather** for evaluating the relationship between weather and demand.
+
+Replacing observed weather with historical forecast-weather archives is an important future improvement.
+
+---
+
+# Machine Learning Models
+
+The project evaluates increasingly capable approaches:
 
 ```text
-Data available through Dec 31, 2023
-                │
-                ▼
-       Forecast Jan 1, 2024
-          Next 24 hours
-                │
-                ▼
-       Observe Jan 1 demand
-                │
-                ▼
-Data available through Jan 1, 2024
-                │
-                ▼
-       Forecast Jan 2, 2024
-          Next 24 hours
-                │
-                ▼
-              ...
-                │
-                ▼
-       Forecast Dec 31, 2024
+Seasonal Naive
+      ↓
+Linear Regression
+      ↓
+Random Forest
+      ↓
+XGBoost
+      ↓
+XGBoost Hyperparameter Tuning
+      ↓
+Final XGBoost
 ```
 
-The baseline validation configuration is:
+---
+
+# Seasonal Naive Baseline
+
+The primary baseline predicts demand using demand from the same hour one day earlier:
 
 ```text
-Forecast horizon:   24 hours
-Step size:          24 hours
-Forecast windows:   366
-Total predictions:  8,784
+Prediction(t) = Demand(t - 24 hours)
 ```
 
-Because 2024 is a leap year:
+A second baseline uses the same hour one week earlier:
 
 ```text
-366 days × 24 hours = 8,784 predictions
+Prediction(t) = Demand(t - 168 hours)
 ```
+
+The daily baseline established that previous-day demand is a strong predictor and provided a meaningful threshold for the machine-learning models.
+
+Because demand-quality filtering creates gaps in the final eligible modeling observations, fair post-QC baseline comparison should evaluate baseline predictions on the same eligible target timestamps used by the supervised models.
+
+---
+
+# Post-QC Validation Results
+
+After implementing the expanded demand-quality pipeline, all supervised models were retrained using the cleaned feature dataset.
+
+## Linear Regression
+
+```text
+MAE:  1,347.18 MW
+RMSE: 1,824.94 MW
+MAPE: 3.93%
+```
+
+The corrected result was substantially better than the earlier Linear Regression result, showing how strongly corrupted observations had affected the initial evaluation.
+
+---
+
+# Random Forest
+
+Post-QC validation performance:
+
+```text
+MAE:  1,109.69 MW
+RMSE: 1,502.15 MW
+MAPE: 3.22%
+```
+
+Worst validation prediction:
+
+```text
+Timestamp:  2024-07-20 05:00 UTC
+Actual:     43,551 MW
+Predicted:  26,563 MW
+```
+
+The observation survived the expanded data-quality checks, suggesting that it represents a genuinely difficult demand pattern rather than the type of long flatline automatically excluded by the QC pipeline.
+
+The target was much larger than demand 24 hours earlier:
+
+```text
+Target:          43,551 MW
+24-hour lag:     24,991 MW
+168-hour lag:    39,485 MW
+```
+
+This illustrates the difficulty of forecasting rapid changes when recent daily demand is not representative of current conditions.
+
+---
+
+# XGBoost
+
+The initial post-QC XGBoost configuration achieved:
+
+```text
+MAE:  1,074.52 MW
+RMSE: 1,390.50 MW
+MAPE: 3.16%
+```
+
+This outperformed both Linear Regression and Random Forest on the cleaned 2024 validation set.
+
+---
+
+# XGBoost Feature Importance
+
+Before final retraining, the XGBoost validation model placed most importance on historical demand and regional temperature.
+
+Major features included:
+
+| Feature | Importance |
+|---|---:|
+| demand_lag_24h | 0.6619 |
+| Wichita temperature | 0.0961 |
+| Oklahoma temperature | 0.0680 |
+| demand_lag_168h | 0.0400 |
+| is_weekend | 0.0230 |
+| Kansas City temperature | 0.0209 |
+| Omaha temperature | 0.0192 |
+
+Grouped importance:
+
+```text
+Demand History:       70.19%
+Temperature:          20.61%
+Calendar:              5.25%
+Humidity / Dew Point:  3.27%
+Wind:                   0.68%
+```
+
+This indicates that recent electricity demand is the strongest source of predictive information, while weather provides additional information needed to adjust those historical patterns.
+
+---
+
+# Performance by Temperature
+
+The validation model performed best under moderate regional temperatures and worse during temperature extremes.
+
+```text
+Temperature     MAE
+< 0°C           1,637.56 MW
+0-10°C            904.88 MW
+10-20°C           871.28 MW
+20-30°C         1,128.02 MW
+> 30°C          1,235.39 MW
+```
+
+Cold conditions were particularly difficult.
+
+This supports the expectation that electricity demand becomes harder to predict during unusual weather and high heating or cooling demand.
+
+---
+
+# XGBoost Hyperparameter Tuning
+
+A predefined grid of 72 XGBoost configurations was evaluated using the cleaned 2024 validation dataset.
+
+The best configuration was:
+
+```python
+XGBRegressor(
+    max_depth=4,
+    learning_rate=0.03,
+    n_estimators=300,
+    subsample=1.0,
+    colsample_bytree=0.8,
+    objective="reg:squarederror",
+    random_state=42,
+    n_jobs=-1
+)
+```
+
+Best 2024 validation performance:
+
+```text
+MAE:  1,023.97 MW
+RMSE: 1,347.40 MW
+MAPE: 3.01%
+```
+
+Improvement over the original post-QC XGBoost configuration:
+
+```text
+MAE improvement:   8.57%
+RMSE improvement:  7.75%
+MAPE improvement:  9.84%
+```
+
+The top two configurations were extremely close:
+
+```text
+subsample = 1.0 → MAE 1,023.97 MW
+subsample = 0.8 → MAE 1,024.46 MW
+```
+
+This suggests that the general model configuration was relatively stable and that further aggressive tuning would provide little practical benefit while increasing the risk of overfitting the validation period.
+
+---
+
+# Final Model Training
+
+After selecting the hyperparameters using 2024 validation data, the final model is retrained using all eligible observations from:
+
+```text
+2020 through 2024
+```
+
+Final training observations:
+
+```text
+42,420
+```
+
+The final model is then evaluated against eligible observations from:
+
+```text
+2025
+```
+
+Final test observations:
+
+```text
+7,011
+```
+
+The model is never fit using the 2025 demand targets.
+
+---
+
+# Final 2025 Test Results
+
+The final tuned XGBoost model achieved:
+
+| Metric | 2024 Validation | 2025 Final Test |
+|---|---:|---:|
+| MAE | 1,023.97 MW | **1,117.60 MW** |
+| RMSE | 1,347.40 MW | **1,429.34 MW** |
+| MAPE | 3.01% | **3.18%** |
+
+Final test performance:
+
+```text
+MAE:  1,117.60 MW
+RMSE: 1,429.34 MW
+MAPE: 3.18%
+```
+
+The relatively small increase from validation to test error indicates that the selected model generalized reasonably well from the 2020–2024 development period to the later 2025 period.
+
+A 3.18% MAPE means that, across retained 2025 observations, the forecast differed from actual demand by approximately 3.18% on average.
+
+---
+
+# Final 2025 Worst Prediction
+
+The largest retained 2025 error occurred at:
+
+```text
+Timestamp:        2025-07-11 05:00 UTC
+Actual:           47,720.00 MW
+Predicted:        39,376.69 MW
+Absolute error:    8,343.31 MW
+Percentage error:     17.48%
+```
+
+Historical-demand features were:
+
+```text
+demand_lag_24h:  39,796 MW
+demand_lag_168h: 37,408 MW
+```
+
+The target was substantially higher than both lagged demand values, contributing to the underprediction.
+
+This timestamp is also notable because it occurs at the end of an 11-hour sequence of identical `47,720 MW` observations.
+
+The automatic flatline threshold is 12 hours, so this sequence is reported by the QC system but intentionally retained.
+
+The threshold was **not changed after final evaluation** simply to remove the worst model error.
+
+This preserves the predefined preprocessing rule and avoids changing the dataset based on final test performance.
+
+---
+
+# Final Model Feature Importance
+
+After retraining on 2020–2024, the final model's strongest features were:
+
+| Feature | Importance |
+|---|---:|
+| demand_lag_24h | 0.4778 |
+| demand_lag_168h | 0.1623 |
+| Wichita temperature | 0.1437 |
+| Oklahoma temperature | 0.0690 |
+| Kansas City temperature | 0.0398 |
+| Omaha temperature | 0.0185 |
+| Wichita dew point | 0.0148 |
+| is_weekend | 0.0119 |
+| Omaha dew point | 0.0114 |
+| day_of_week | 0.0104 |
+
+The two historical-demand features alone account for approximately:
+
+```text
+64%
+```
+
+of total feature importance.
+
+This reinforces the importance of daily and weekly persistence in electricity-demand forecasting.
+
+Temperature is the next major source of predictive information.
+
+---
+
+# 2025 Error by Hour
+
+The model performed best during the morning hours and was generally less accurate around midnight and early morning.
+
+Selected results:
+
+| Hour | MAE | MAPE |
+|---:|---:|---:|
+| 1 | 1,453.09 MW | 3.82% |
+| 5 | 1,119.34 MW | 3.27% |
+| 8 | 886.22 MW | 2.87% |
+| 9 | 858.62 MW | 2.80% |
+| 10 | **854.25 MW** | **2.79%** |
+| 11 | 880.05 MW | 2.82% |
+| 18 | 1,097.45 MW | 3.03% |
+| 23 | 1,453.88 MW | 3.80% |
+
+The lowest hourly MAPE occurred around:
+
+```text
+10:00 UTC
+```
+
+while some of the largest errors occurred around:
+
+```text
+00:00-03:00 UTC
+23:00 UTC
+```
+
+This suggests that forecast difficulty varies meaningfully across the daily load cycle.
+
+---
+
+# 2025 Error by Month
+
+Monthly performance also varied:
+
+| Month | MAE | MAPE |
+|---|---:|---:|
+| January | 1,435.59 MW | 3.84% |
+| February | 1,274.16 MW | 3.56% |
+| March | 823.91 MW | 2.69% |
+| April | **818.31 MW** | 2.71% |
+| May | 1,086.77 MW | 3.44% |
+| June | 1,262.12 MW | 3.56% |
+| July | 988.49 MW | **2.43%** |
+| August | 1,212.30 MW | 2.96% |
+| September | 1,116.27 MW | 3.15% |
+| October | 881.10 MW | 2.77% |
+| November | 987.05 MW | 3.14% |
+| December | **1,490.50 MW** | **4.08%** |
+
+December was the most difficult month by both MAE and MAPE.
+
+Interestingly, July contained the single largest retained error while still producing the lowest monthly MAPE.
+
+This demonstrates why individual worst-case errors and aggregate metrics should both be examined.
+
+---
+
+# Final Model Comparison
+
+Post-QC 2024 validation performance:
+
+| Model | MAE | RMSE | MAPE |
+|---|---:|---:|---:|
+| Linear Regression | 1,347.18 MW | 1,824.94 MW | 3.93% |
+| Random Forest | 1,109.69 MW | 1,502.15 MW | 3.22% |
+| XGBoost | 1,074.52 MW | 1,390.50 MW | 3.16% |
+| **Tuned XGBoost** | **1,023.97 MW** | **1,347.40 MW** | **3.01%** |
+
+Final selected model:
+
+```text
+Tuned XGBoost
+```
+
+Final 2025 evaluation:
+
+```text
+MAE:  1,117.60 MW
+RMSE: 1,429.34 MW
+MAPE: 3.18%
+```
+
+---
+
+# Evaluation Metrics
+
+## MAE
+
+Mean Absolute Error:
+
+```text
+MAE = mean(|actual - predicted|)
+```
+
+MAE measures the typical size of an hourly forecast error in MW.
+
+For the final model:
+
+```text
+MAE = 1,117.60 MW
+```
+
+meaning the retained 2025 predictions differ from actual demand by approximately 1,118 MW on average.
+
+## RMSE
+
+Root Mean Squared Error gives additional weight to large forecast errors.
+
+```text
+Final RMSE = 1,429.34 MW
+```
+
+## MAPE
+
+Mean Absolute Percentage Error:
+
+```text
+MAPE = mean(|actual - predicted| / actual) × 100
+```
+
+Final:
+
+```text
+MAPE = 3.18%
+```
+
+---
+
+# Challenges and Findings
+
+## 1. Missing Values Are Not the Only Data-Quality Problem
+
+Initial validation focused on:
+
+```text
+missing timestamps
+duplicate timestamps
+missing values
+```
+
+However, values can exist and still be incorrect.
+
+Examples discovered during this project included:
+
+```text
+Relative humidity: 31,287%
+Electricity demand: 3,621,097 MW
+```
+
+This motivated physical plausibility checks for both weather and demand.
+
+### Finding
+
+Data validation must answer both:
+
+```text
+Does the value exist?
+```
+
+and:
+
+```text
+Does the value make sense?
+```
+
+---
+
+## 2. Valid Individual Values Can Form Invalid Sequences
+
+The flatline issue introduced another class of data-quality problem.
+
+Values such as:
+
+```text
+33,813 MW
+37,455 MW
+48,701 MW
+```
+
+are individually plausible SPP demand values.
+
+The problem becomes visible only when exactly the same value appears for dozens or hundreds of consecutive hours.
+
+### Finding
+
+Data quality must be evaluated across both:
+
+```text
+individual observations
+```
+
+and:
+
+```text
+temporal sequences
+```
+
+Range checks alone cannot detect this type of failure.
+
+---
+
+## 3. Model Errors Became Data-Quality Signals
+
+Several major pipeline problems were discovered because model predictions behaved unexpectedly.
+
+Linear Regression exposed corrupted weather.
+
+Random Forest exposed an extreme corrupted electricity-demand target.
+
+Final XGBoost error analysis exposed long demand flatlines.
+
+### Finding
+
+Model diagnostics can serve as an additional layer of data-quality monitoring.
+
+An extreme prediction or error should trigger investigation of:
+
+```text
+model behavior
+feature engineering
+data leakage
+input quality
+target quality
+```
+
+rather than automatically being blamed on the algorithm.
+
+---
+
+## 4. Data Quality Can Propagate Through Lag Features
+
+A bad demand observation does not affect only one target row.
+
+Because the project uses:
+
+```text
+demand_lag_24h
+demand_lag_168h
+```
+
+one corrupted sequence can reappear later as model input.
+
+### Finding
+
+Quality metadata must propagate through feature engineering.
+
+This is why the project checks target quality as well as the quality of the observations used to create important lag features.
+
+---
+
+## 5. Long Gaps Should Not Be Blindly Interpolated
+
+Short isolated gaps can reasonably be estimated.
+
+Long gaps are different.
+
+Interpolating across days of missing weather or demand can create artificial patterns that never occurred.
+
+### Finding
+
+The project uses conservative repair strategies:
+
+```text
+Short weather gaps → interpolate
+
+Long weather gaps → preserve as missing
+
+Isolated invalid demand → interpolate
+
+Long demand flatlines → flag and exclude
+```
+
+---
+
+## 6. Row-Based Time-Series Operations Can Be Dangerous
+
+Once timestamps are removed because of missing weather:
+
+```python
+df.shift(24)
+```
+
+does not necessarily mean 24 hours earlier.
+
+### Finding
+
+Time-series features should be constructed using the complete timestamp-aware history and joined back by timestamp.
+
+---
+
+## 7. Forecast-Time Availability Matters
+
+A feature can be historically valid but unavailable when a real forecast is generated.
+
+Examples include:
+
+```text
+one-hour target-relative demand lags
+target-relative rolling windows
+observed future weather
+```
+
+### Finding
+
+Predictive power alone is not enough.
+
+A production forecasting feature must also be available at forecast time.
+
+---
+
+## 8. Historical Demand Is the Strongest Predictor
+
+The final model places approximately 64% of its feature importance on:
+
+```text
+demand_lag_24h
+demand_lag_168h
+```
+
+### Finding
+
+SPP electricity demand contains strong daily and weekly persistence.
+
+Weather improves the model's ability to adjust those historical patterns.
+
+---
+
+## 9. Temperature Matters More Than Most Other Weather Variables
+
+Regional temperature variables consistently rank above:
+
+```text
+humidity
+dew point
+wind speed
+```
+
+with Wichita and Oklahoma temperature particularly important.
+
+### Finding
+
+Temperature appears to be the most useful environmental signal in the current model.
+
+---
+
+## 10. Extreme Conditions Are Harder to Forecast
+
+Validation performance was worse during very cold and very hot conditions than during moderate temperatures.
+
+### Finding
+
+Demand behavior becomes more difficult to estimate during weather extremes, likely because heating and cooling loads introduce stronger nonlinear behavior.
+
+---
+
+## 11. Average Performance Can Hide Large Errors
+
+The final model achieved:
+
+```text
+MAPE = 3.18%
+```
+
+but still had a worst retained error of:
+
+```text
+8,343 MW
+```
+
+### Finding
+
+A strong average forecasting metric does not guarantee small errors at every timestamp.
+
+Grid forecasting analysis should examine:
+
+```text
+MAE
+RMSE
+MAPE
+worst-case errors
+hourly behavior
+monthly behavior
+extreme weather
+peak demand
+```
+
+---
+
+## 12. Validation and Test Performance Should Be Close, Not Identical
+
+The tuned XGBoost achieved:
+
+```text
+2024 Validation MAPE: 3.01%
+2025 Test MAPE:       3.18%
+```
+
+The test result is slightly worse but remains close to validation performance.
+
+### Finding
+
+This is a healthier result than seeing a dramatic test-performance collapse and suggests reasonable generalization to the later year.
+
+---
+
+## 13. More Hyperparameter Tuning Was Not Necessarily Better
+
+The two strongest XGBoost configurations differed by less than 1 MW in validation MAE.
+
+### Finding
+
+Once several configurations perform almost identically, continued tuning provides little practical value and increases the chance of fitting model-selection decisions too closely to the validation year.
+
+---
+
+## 14. Data Cleaning Decisions Must Not Chase Test Performance
+
+The final worst prediction occurs inside an 11-hour constant-demand sequence.
+
+The predefined automatic flatline threshold is 12 hours.
+
+Lowering the threshold after seeing the final test error could improve reported metrics but would make the preprocessing decision dependent on test performance.
+
+### Finding
+
+Data-quality rules should be defined generally and applied consistently, even when that means retaining difficult observations.
+
+---
+
+## 15. Observed Weather Is Not the Same as Forecast Weather
+
+The historical experiment uses weather observations from the target period.
+
+A real day-ahead system would not know the exact future temperature, humidity, or wind speed.
+
+### Finding
+
+A production implementation should replace observed target-time weather with archived weather forecasts that would actually have been available when each demand forecast was issued.
 
 ---
 
@@ -990,7 +1509,9 @@ Because 2024 is a leap year:
 │       ├── weather/
 │       ├── swpp_demand_2020_2025.csv
 │       ├── modeling_dataset.csv
-│       └── feature_dataset.csv
+│       ├── feature_dataset.csv
+│       ├── xgboost_tuning_results.csv
+│       └── final_2025_predictions.csv
 │
 ├── src/
 │   ├── extract_swpp_demand.py
@@ -1001,1102 +1522,27 @@ Because 2024 is a leap year:
 │   ├── feature_engineering.py
 │   ├── train_baseline.py
 │   ├── train_linear_regression.py
-│   └── train_random_forest.py
+│   ├── train_random_forest.py
+│   ├── train_xgboost.py
+│   ├── tune_xgboost.py
+│   └── test_final_model.py
 │
 ├── .gitignore
 ├── requirements.txt
 └── README.md
 ```
 
-Large raw and generated processed datasets are excluded from Git version control.
-
----
-
-# Pipeline Components
-
-## 1. Electricity Extraction
-
-```text
-src/extract_swpp_demand.py
-```
-
-Extracts hourly SPP electricity demand from the EIA bulk electricity dataset.
-
-```text
-EBA.txt
-    │
-    ▼
-Extract SWPP Demand
-    │
-    ▼
-SWPP Hourly Demand
-```
-
----
-
-## 2. Electricity Validation
-
-```text
-src/validate_electricity.py
-```
-
-Validates and cleans the electricity-demand timeline.
-
-Responsibilities include:
-
-- Timestamp parsing
-- Numeric conversion
-- Missing timestamp detection
-- Duplicate detection
-- Hourly reindexing
-- Unrealistic demand detection
-- Missing demand handling
-- Time interpolation
-- Final timeline validation
-
-Final output:
-
-```text
-52,608 continuous hourly demand observations
-```
-
----
-
-## 3. Weather Validation
-
-```text
-src/validate_weather.py
-```
-
-Processes and validates NOAA weather observations.
-
-Responsibilities include:
-
-- NOAA PSV parsing
-- Numeric conversion
-- Physical range checks
-- Hourly observation selection
-- Timestamp normalization
-- Missing observation detection
-- Short-gap interpolation
-- Long-gap preservation
-- Station-level validation
-
----
-
-## 4. Weather Gap Analysis
-
-```text
-src/check_weather_gaps.py
-```
-
-Analyzes missing weather periods.
-
-The script reports:
-
-```text
-Total missing hours
-Longest consecutive gap
-Gap start time
-Gap end time
-```
-
-This allows long reporting gaps to be detected before interpolation.
-
----
-
-## 5. Dataset Construction
-
-```text
-src/build_dataset.py
-```
-
-Combines:
-
-```text
-SPP electricity demand
-+
-Kansas City weather
-+
-Wichita weather
-+
-Oklahoma City weather
-+
-Omaha weather
-+
-Fargo weather
-```
-
-using:
-
-```text
-timestamp_utc
-```
-
-Responsibilities include:
-
-- Loading processed data
-- Renaming weather features
-- One-to-one joins
-- Row-count validation
-- Missing-weather analysis
-- Filtering incomplete observations
-- Saving the modeling dataset
-
-Output:
-
-```text
-data/processed/modeling_dataset.csv
-```
-
----
-
-## 6. Feature Engineering
-
-```text
-src/feature_engineering.py
-```
-
-Creates:
-
-```text
-Calendar features
-Demand lag features
-Rolling demand features
-Chronological split labels
-```
-
-Demand-history features are calculated from the complete demand timeline before being merged onto the modeling dataset.
-
-Output:
-
-```text
-data/processed/feature_dataset.csv
-```
-
----
-
-## 7. Baseline Forecasting
-
-```text
-src/train_baseline.py
-```
-
-Creates and evaluates Seasonal Naive electricity-demand forecasts.
-
-The baseline pipeline:
-
-1. Loads the complete electricity-demand history.
-2. Converts the data into StatsForecast format.
-3. Separates training, validation, and test periods.
-4. Performs rolling 24-hour forecasting across 2024.
-5. Compares predictions against actual demand.
-6. Calculates MAE, RMSE, and MAPE.
-
-StatsForecast uses the following column structure:
-
-```text
-unique_id
-ds
-y
-```
-
-where:
-
-```text
-unique_id = SWPP
-ds        = timestamp
-y         = actual electricity demand
-```
-
----
-
-## 8. Linear Regression
-
-```text
-src/train_linear_regression.py
-```
-
-Trains a simple supervised-learning model using:
-
-```text
-Calendar features
-24-hour demand lag
-168-hour demand lag
-Regional weather features
-```
-
-The model is trained using:
-
-```text
-2020-2023
-```
-
-and evaluated using:
-
-```text
-2024
-```
-
-The 2025 test set remains untouched.
-
----
-
-## 9. Random Forest
-
-```text
-src/train_random_forest.py
-```
-
-Trains a nonlinear tree-based model using the same core feature set as Linear Regression.
-
-The model is trained using:
-
-```text
-2020-2023
-```
-
-and evaluated using:
-
-```text
-2024
-```
-
-This creates a direct comparison between a simple linear model and a nonlinear ensemble model.
-
----
-
-# Modeling Strategy
-
-The project compares simple historical-demand baselines against increasingly capable machine-learning models.
-
-Current modeling progression:
-
-```text
-Seasonal Naive Baselines
-          │
-          ▼
-   Linear Regression
-          │
-          ▼
-     Random Forest
-          │
-          ▼
-       XGBoost
-          │
-          ▼
-   Model Comparison
-          │
-          ▼
-     Final 2025 Test
-```
-
-The purpose of the baseline models is to establish a meaningful performance threshold.
-
-A more complex model should provide measurable improvement over simply using recent historical electricity demand.
-
----
-
-# Baseline Models
-
-Two Seasonal Naive forecasting baselines are evaluated.
-
-These models are implemented using:
-
-```text
-StatsForecast
-```
-
----
-
-## 24-Hour Seasonal Naive
-
-The daily Seasonal Naive model uses:
-
-```python
-SeasonalNaive(season_length=24)
-```
-
-For each future hour, the prediction is based on the demand observed at the same hour one day earlier.
-
-Conceptually:
-
-```text
-Forecast at time t
-=
-Demand at time t - 24 hours
-```
-
-Example:
-
-```text
-Forecast:
-Tuesday 3:00 PM
-
-Uses:
-Monday 3:00 PM demand
-```
-
-The model is evaluated using a:
-
-```text
-24-hour forecast horizon
-```
-
-and the forecasting origin moves forward one day after every prediction window.
-
----
-
-## 168-Hour Seasonal Naive
-
-The weekly Seasonal Naive model uses:
-
-```python
-SeasonalNaive(season_length=168)
-```
-
-because:
-
-```text
-24 hours × 7 days = 168 hours
-```
-
-For each future hour, the prediction is based on the corresponding hour from one week earlier.
-
-Conceptually:
-
-```text
-Forecast at time t
-=
-Demand at time t - 168 hours
-```
-
-The value `168` represents the seasonal lookback period, not the forecasting horizon.
-
----
-
-# Baseline Evaluation Results
-
-Both Seasonal Naive models were evaluated across the full 2024 validation period using rolling 24-hour forecasting.
-
-The evaluation contains:
-
-```text
-366 forecast windows
-24 predictions per window
-8,784 total predictions
-```
-
-Results:
-
-| Model | MAE | RMSE | MAPE |
-|---|---:|---:|---:|
-| **Seasonal Naive - 24 Hour** | **1,457.18 MW** | **2,003.98 MW** | **4.34%** |
-| Seasonal Naive - 168 Hour | 2,823.37 MW | 3,865.90 MW | 8.27% |
-
----
-
-# Baseline Interpretation
-
-The 24-hour Seasonal Naive baseline substantially outperformed the 168-hour weekly baseline.
-
-## Daily Seasonal Naive
-
-```text
-MAE:  1,457.18 MW
-RMSE: 2,003.98 MW
-MAPE: 4.34%
-```
-
-A MAPE of:
-
-```text
-4.34%
-```
-
-means the daily Seasonal Naive forecast differs from actual electricity demand by approximately:
-
-```text
-4.34% on average
-```
-
-across the 2024 validation period.
-
-The MAE indicates that the model's hourly forecast is typically off by approximately:
-
-```text
-1,457 MW
-```
-
----
-
-## Daily vs Weekly Demand Persistence
-
-The results show that:
-
-```text
-Demand 24 hours earlier
-```
-
-is substantially more predictive of future SPP hourly demand than:
-
-```text
-Demand 168 hours earlier
-```
-
-for the 2024 validation period.
-
-MAPE comparison:
-
-```text
-24-hour Seasonal Naive:  4.34%
-168-hour Seasonal Naive: 8.27%
-```
-
-This establishes the daily Seasonal Naive model as the project's:
-
-```text
-PRIMARY BASELINE
-```
-
----
-
-# Linear Regression
-
-Linear Regression serves as the first supervised machine-learning model.
-
-The model uses:
-
-```text
-hour
-day_of_week
-month
-is_weekend
-
-demand_lag_24h
-demand_lag_168h
-
-20 regional weather features
-```
-
-For the first day-ahead machine-learning comparison, the following engineered features are intentionally excluded:
-
-```text
-demand_lag_1h
-demand_rolling_24h
-demand_rolling_168h
-```
-
-because their availability requires additional care when forecasting all 24 future hours at once.
-
----
-
-## Linear Regression Results
-
-After electricity and weather data-quality corrections:
-
-```text
-MAE:  3,791.94 MW
-RMSE: 4,950.42 MW
-MAPE: 10.93%
-```
-
-| Model | MAE | RMSE | MAPE |
-|---|---:|---:|---:|
-| Seasonal Naive - 24 Hour | **1,457.18 MW** | **2,003.98 MW** | **4.34%** |
-| Linear Regression | 3,791.94 MW | 4,950.42 MW | 10.93% |
-
-Linear Regression performs substantially worse than the daily Seasonal Naive baseline.
-
----
-
-# Linear Regression Interpretation
-
-The result demonstrates that adding more features does not automatically create a better forecasting model.
-
-Electricity demand has nonlinear relationships with several variables.
-
-Temperature is one example.
-
-Demand can increase during:
-
-```text
-very cold weather
-```
-
-because of heating load, while also increasing during:
-
-```text
-very hot weather
-```
-
-because of cooling load.
-
-A simple linear model cannot naturally represent this type of relationship without additional feature transformations.
-
-Calendar variables also contain nonlinear and cyclical behavior.
-
-For example:
-
-```text
-hour = 23
-```
-
-and:
-
-```text
-hour = 0
-```
-
-are adjacent in real time even though they appear numerically far apart.
-
-The poor Linear Regression performance motivated testing a nonlinear tree-based model.
-
----
-
-# Random Forest
-
-Random Forest is the first nonlinear machine-learning model used in the project.
-
-It is implemented using:
-
-```text
-scikit-learn
-```
-
-The model uses the same main inputs as the Linear Regression model:
-
-```text
-Calendar features
-24-hour demand lag
-168-hour demand lag
-Regional weather observations
-```
-
-Using the same general feature set makes the comparison between models more meaningful.
-
----
-
-# Random Forest Results
-
-After correcting both weather and electricity-demand data-quality problems, Random Forest achieved:
-
-```text
-MAE:  1,137.73 MW
-RMSE: 1,535.01 MW
-MAPE: 3.36%
-```
-
-Compared with the primary 24-hour Seasonal Naive baseline:
-
-```text
-Seasonal Naive
-
-MAE:  1,457.18 MW
-RMSE: 2,003.98 MW
-MAPE: 4.34%
-```
-
-Random Forest improves all three evaluation metrics.
-
----
-
-# Random Forest Improvement Over Baseline
-
-Approximate improvement compared with the 24-hour Seasonal Naive baseline:
-
-```text
-MAE improvement:  ~21.9%
-RMSE improvement: ~23.4%
-MAPE improvement: ~22.6%
-```
-
-This means the Random Forest model successfully demonstrates that:
-
-```text
-Weather
-+
-Calendar information
-+
-Historical demand
-+
-Nonlinear machine learning
-```
-
-can outperform a strong previous-day persistence forecast on the 2024 validation period.
-
----
-
-# Random Forest Error Analysis
-
-The largest absolute Random Forest validation error occurred at:
-
-```text
-Timestamp: 2024-07-20 05:00:00 UTC
-```
-
-Prediction:
-
-```text
-26,252.86 MW
-```
-
-Actual demand:
-
-```text
-43,551.00 MW
-```
-
-Absolute error:
-
-```text
-17,298.14 MW
-```
-
-Relevant historical demand features were:
-
-```text
-demand_lag_24h:  24,991 MW
-demand_lag_168h: 39,485 MW
-```
-
-Demand around the timestamp was:
-
-```text
-2024-07-20 03:00   43,575 MW
-2024-07-20 04:00   43,575 MW
-2024-07-20 05:00   43,551 MW
-2024-07-20 06:00   32,377 MW
-2024-07-20 07:00   30,988 MW
-```
-
-The model substantially underestimated this unusual high-demand period.
-
-The 24-hour lag was especially low relative to the target:
-
-```text
-24,991 MW vs 43,551 MW
-```
-
-which may have contributed to the underprediction.
-
-This demonstrates that even the best current model can struggle when current demand behavior differs sharply from recent daily patterns.
-
----
-
-# Current Model Comparison
-
-| Model | MAE | RMSE | MAPE |
-|---|---:|---:|---:|
-| **Random Forest** | **1,137.73 MW** | **1,535.01 MW** | **3.36%** |
-| Seasonal Naive - 24 Hour | 1,457.18 MW | 2,003.98 MW | 4.34% |
-| Seasonal Naive - 168 Hour | 2,823.37 MW | 3,865.90 MW | 8.27% |
-| Linear Regression | 3,791.94 MW | 4,950.42 MW | 10.93% |
-| XGBoost | TBD | TBD | TBD |
-
-Current strongest validation model:
-
-```text
-Random Forest
-```
-
-The 2025 test dataset remains untouched.
-
----
-
-# Evaluation Metrics
-
-Forecast performance is measured using three metrics.
-
-## MAE
-
-Mean Absolute Error
-
-```text
-MAE = average absolute prediction error
-```
-
-Mathematically:
-
-```text
-MAE = mean(|actual - predicted|)
-```
-
-MAE provides an intuitive measure of the typical hourly demand-forecast error.
-
-For example:
-
-```text
-Random Forest MAE = 1,137.73 MW
-```
-
-means the prediction differs from actual demand by approximately:
-
-```text
-1,138 MW on average
-```
-
----
-
-## RMSE
-
-Root Mean Squared Error
-
-```text
-RMSE = square root of mean squared prediction error
-```
-
-RMSE penalizes large forecasting errors more heavily than MAE.
-
-A significantly higher RMSE than MAE can indicate that the model occasionally produces large forecasting misses.
-
----
-
-## MAPE
-
-Mean Absolute Percentage Error
-
-```text
-MAPE = average absolute percentage prediction error
-```
-
-Conceptually:
-
-```text
-MAPE
-=
-mean(
-    |actual - predicted|
-    --------------------
-           actual
-) × 100
-```
-
-For example:
-
-```text
-Random Forest MAPE = 3.36%
-```
-
-means the model differs from actual demand by approximately:
-
-```text
-3.36% on average
-```
-
-across the validation observations.
-
----
-
-# Challenges and Observations
-
-This project has revealed several important challenges associated with working with real-world energy data.
-
----
-
-## 1. Missing Values Are Not the Only Data-Quality Problem
-
-Initial validation focused on:
-
-```text
-missing timestamps
-duplicate timestamps
-missing values
-```
-
-However, both the electricity and weather datasets contained values that were technically present but clearly unrealistic.
-
-Examples included:
-
-```text
-Relative humidity: 31,287%
-Electricity demand: 3,621,097 MW
-```
-
-Neither value would have been detected by a simple missing-value check.
-
-This led to adding physical plausibility checks to both validation pipelines.
-
-### Observation
-
-Reliable machine-learning pipelines need to validate:
-
-```text
-whether a value exists
-```
-
-and:
-
-```text
-whether the value makes sense
-```
-
----
-
-## 2. Model Errors Helped Identify Data Problems
-
-Two major data-quality problems were discovered because machine-learning models produced extreme predictions.
-
-Linear Regression initially produced approximately:
-
-```text
--2,997,113 MW
-```
-
-which led to discovering corrupted NOAA weather values.
-
-Random Forest later produced approximately:
-
-```text
-966,023 MW
-```
-
-which led to discovering the corrupted EIA demand observation.
-
-### Observation
-
-Unexpected model behavior should not always be treated as a model problem.
-
-It can also indicate:
-
-```text
-bad training data
-incorrect feature engineering
-data leakage
-pipeline errors
-```
-
-Model diagnostics became an additional form of data-quality monitoring.
-
----
-
-## 3. Long Weather Gaps Should Not Be Blindly Interpolated
-
-Some NOAA weather stations contained multi-day reporting gaps.
-
-Interpolating across these periods would create artificial weather observations that were never measured.
-
-The pipeline therefore distinguishes between:
-
-```text
-short gaps
-```
-
-and:
-
-```text
-long gaps
-```
-
-using a maximum interpolation length of six hours.
-
-### Observation
-
-Missing-value handling should depend on the length and meaning of the missing period rather than applying one interpolation rule to every gap.
-
----
-
-## 4. Row-Based Time-Series Shifts Can Be Incorrect
-
-The modeling dataset removes some timestamps because of missing weather observations.
-
-This means:
-
-```python
-df.shift(24)
-```
-
-does not necessarily represent:
-
-```text
-exactly 24 clock-hours earlier
-```
-
-if calculated after rows have been removed.
-
-### Observation
-
-Time-series feature engineering should respect timestamps rather than assuming every remaining row is separated by exactly one hour.
-
-This motivated calculating lag features from the complete demand timeline and merging them back by timestamp.
-
----
-
-## 5. A Strong Simple Baseline Is Difficult to Beat
-
-The 24-hour Seasonal Naive model achieved:
-
-```text
-MAPE: 4.34%
-```
-
-without using:
-
-```text
-weather
-machine learning
-feature engineering
-```
-
-It simply uses demand from the previous day.
-
-Linear Regression achieved:
-
-```text
-MAPE: 10.93%
-```
-
-and performed significantly worse.
-
-### Observation
-
-A more complicated model is not automatically better.
-
-Strong forecasting projects need meaningful baselines so that model complexity is justified by measurable improvement.
-
----
-
-## 6. Nonlinear Models Fit the Problem Better
-
-Random Forest reduced validation MAPE to:
-
-```text
-3.36%
-```
-
-compared with:
-
-```text
-4.34%
-```
-
-for the daily Seasonal Naive model and:
-
-```text
-10.93%
-```
-
-for Linear Regression.
-
-### Observation
-
-Electricity demand appears to contain nonlinear interactions among:
-
-```text
-weather
-time
-seasonality
-historical demand
-```
-
-Tree-based models are better suited to learning these patterns than the initial untransformed Linear Regression model.
-
----
-
-## 7. Daily Demand Is More Predictive Than Weekly Demand
-
-The baseline results were:
-
-```text
-24-hour Seasonal Naive MAPE:  4.34%
-168-hour Seasonal Naive MAPE: 8.27%
-```
-
-### Observation
-
-For this dataset and validation period, demand from the previous day contains much stronger predictive information than demand from the same hour one week earlier.
-
----
-
-## 8. Forecast Errors Can Still Be Large During Unusual Periods
-
-Random Forest achieved strong average performance but still produced an error of more than:
-
-```text
-17,000 MW
-```
-
-during its worst validation observation.
-
-### Observation
-
-Average metrics alone do not fully describe model behavior.
-
-Future analysis should examine:
-
-```text
-peak-demand periods
-extreme weather
-rapid demand transitions
-seasonal changes
-large-error timestamps
-```
-
----
-
-## 9. Forecast Feature Availability Matters
-
-Features can be valid historically but unavailable when generating a real future forecast.
-
-For example:
-
-```text
-demand_lag_1h
-```
-
-is known for the immediate next hour, but not necessarily for hour 24 of a forecast generated all at once.
-
-Similarly, observed future weather is not available in production.
-
-### Observation
-
-A feature should not only be predictive.
-
-It must also be:
-
-```text
-available at forecast time
-```
-
-This is why the first supervised day-ahead models exclude the one-hour lag and rolling-demand features.
-
----
-
-## 10. UTC Simplifies Integration but May Hide Local Behavior
-
-Using UTC creates a consistent timeline across EIA and NOAA datasets.
-
-However, electricity usage is closely tied to human behavior and local clock time.
-
-### Observation
-
-Future models may benefit from adding local-time or regional-time calendar features while preserving UTC as the system's canonical timestamp.
+Large raw and generated datasets are excluded from Git version control.
 
 ---
 
 # Running the Project
 
-Clone the repository:
-
-```bash
-git clone <repository-url>
-```
-
-Move into the project directory:
-
-```bash
-cd final_project
-```
-
----
-
-## Create Virtual Environment
+## Create a Virtual Environment
 
 ```bash
 python -m venv .venv
 ```
-
-Activate the environment.
 
 ### Windows
 
@@ -2110,27 +1556,19 @@ Activate the environment.
 source .venv/bin/activate
 ```
 
----
-
-## Install Dependencies
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Core machine-learning and forecasting dependencies include:
-
-```bash
-pip install pandas numpy scikit-learn statsforecast xgboost
-```
-
 ---
 
-# Run the Data Pipeline
+# Pipeline Execution
 
-The pipeline should be executed in the following order.
+Run the pipeline in order.
 
-## 1. Extract Electricity Demand
+## 1. Extract SPP Demand
 
 ```bash
 python src/extract_swpp_demand.py
@@ -2142,13 +1580,15 @@ python src/extract_swpp_demand.py
 python src/validate_electricity.py
 ```
 
-## 3. Process and Validate Weather
+This stage performs range validation, interpolation of isolated missing values, flatline detection, and demand-quality labeling.
+
+## 3. Process Weather
 
 ```bash
 python src/validate_weather.py
 ```
 
-## 4. Optional Weather Gap Analysis
+## 4. Analyze Weather Gaps
 
 ```bash
 python src/check_weather_gaps.py
@@ -2160,13 +1600,13 @@ python src/check_weather_gaps.py
 python src/build_dataset.py
 ```
 
-## 6. Engineer Features
+## 6. Engineer Features and Apply Demand QC
 
 ```bash
 python src/feature_engineering.py
 ```
 
-## 7. Train and Evaluate Baselines
+## 7. Train Baseline
 
 ```bash
 python src/train_baseline.py
@@ -2184,24 +1624,23 @@ python src/train_linear_regression.py
 python src/train_random_forest.py
 ```
 
----
+## 10. Train XGBoost
 
-# Data Storage
-
-Large datasets are intentionally excluded from GitHub.
-
-The repository primarily contains:
-
-```text
-source code
-pipeline logic
-configuration
-documentation
+```bash
+python src/train_xgboost.py
 ```
 
-rather than large raw or generated processed data files.
+## 11. Tune XGBoost
 
-Raw datasets must be downloaded from the corresponding EIA and NOAA sources before executing the full pipeline.
+```bash
+python src/tune_xgboost.py
+```
+
+## 12. Run Final 2025 Evaluation
+
+```bash
+python src/test_final_model.py
+```
 
 ---
 
@@ -2212,518 +1651,187 @@ Raw datasets must be downloaded from the corresponding EIA and NOAA sources befo
 - Python
 - Pandas
 - NumPy
-- CSV processing
-- PSV processing
-- ETL pipelines
+- CSV / PSV processing
+- ETL pipeline design
 - Data validation
-- Physical range checks
-- Time-series processing
+- Range validation
+- Temporal data-quality checks
 - Missing-data analysis
-- Timestamp-aware feature engineering
-
-## Time-Series Forecasting
-
-- StatsForecast
-- Seasonal Naive forecasting
-- Rolling-origin evaluation
-- Walk-forward validation
-- Daily seasonality
-- Weekly seasonality
+- Timestamp-aware joins
+- Time-series feature engineering
+- Quality-flag propagation
 
 ## Machine Learning
 
-- Scikit-learn
+- scikit-learn
+- XGBoost
+- StatsForecast
 - Linear Regression
 - Random Forest
-- XGBoost
-
-## Model Evaluation
-
-- MAE
-- RMSE
-- MAPE
-- Chronological validation
-- Error analysis
-- Outlier investigation
-
-## Data Sources
-
-- U.S. Energy Information Administration
-- NOAA Global Historical Climatology Network Hourly
-
-## Development
-
-- Git
-- GitHub
-- Python virtual environments
-
----
-
-# Current Project Status
-
-## Completed
-
-```text
-✓ EIA electricity-demand extraction
-
-✓ Demand timestamp validation
-
-✓ Demand range validation
-
-✓ Corrupted demand-value detection
-
-✓ Continuous 52,608-hour demand timeline
-
-✓ NOAA weather ingestion
-
-✓ NOAA station selection
-
-✓ Hourly weather normalization
-
-✓ Weather physical-range validation
-
-✓ Missing-weather gap detection
-
-✓ Short-gap interpolation
-
-✓ Long-gap preservation
-
-✓ Multi-station weather processing
-
-✓ Electricity + weather dataset integration
-
-✓ Modeling dataset validation
-
-✓ Calendar feature engineering
-
-✓ Timestamp-aware demand lag features
-
-✓ Rolling demand features
-
-✓ Target-leakage prevention
-
-✓ Chronological train / validation / test splitting
-
-✓ 24-hour-ahead forecasting objective defined
-
-✓ Rolling-origin baseline validation
-
-✓ StatsForecast integration
-
-✓ 24-hour Seasonal Naive baseline
-
-✓ 168-hour Seasonal Naive baseline
-
-✓ Linear Regression model
-
-✓ Random Forest model
-
-✓ MAE evaluation
-
-✓ RMSE evaluation
-
-✓ MAPE evaluation
-
-✓ Model error investigation
-
-✓ Baseline performance comparison
-
-✓ Random Forest outperforming primary baseline
-```
-
----
-
-# Current Results
-
-## 24-Hour Seasonal Naive
-
-```text
-MAE:  1,457.18 MW
-RMSE: 2,003.98 MW
-MAPE: 4.34%
-```
-
-## 168-Hour Seasonal Naive
-
-```text
-MAE:  2,823.37 MW
-RMSE: 3,865.90 MW
-MAPE: 8.27%
-```
-
-## Linear Regression
-
-```text
-MAE:  3,791.94 MW
-RMSE: 4,950.42 MW
-MAPE: 10.93%
-```
-
-## Random Forest
-
-```text
-MAE:  1,137.73 MW
-RMSE: 1,535.01 MW
-MAPE: 3.36%
-```
-
-Current best validation model:
-
-```text
-Random Forest
-```
-
----
-
-# Next Steps
-
-```text
-1. Train XGBoost
-
-2. Evaluate XGBoost on 2024 validation data
-
-3. Compare XGBoost against Random Forest
-
-4. Investigate feature importance
-
-5. Analyze errors by hour of day
-
-6. Analyze errors by month and season
-
-7. Visualize actual vs predicted demand
-
-8. Evaluate model behavior during peak-demand periods
-
-9. Consider model hyperparameter tuning
-
-10. Select the strongest validation model
-
-11. Lock model selection
-
-12. Evaluate the final selected model once on the untouched 2025 test set
-
-13. Compare final performance with the Seasonal Naive baseline
-
-14. Document final model results
-```
-
----
-
-# Future Architecture
-
-The current implementation uses local files so the project can remain manageable during initial development.
-
-A future data-engineering version could use:
-
-```text
-               EIA
-                │
-                │
-               NOAA
-                │
-                ▼
-       Automated Ingestion
-                │
-                ▼
-             AWS S3
-        Raw Data Storage
-                │
-                ▼
-        ETL / Validation
-                │
-                ▼
-           Processed S3
-                │
-                ▼
-            Snowflake
-                │
-                ▼
-       Feature Engineering
-                │
-                ▼
-        ML Model Training
-                │
-                ▼
-         Forecast Service
-                │
-           ┌────┴────┐
-           ▼         ▼
-          API     Dashboard
-```
-
----
-
-# Future Data Engineering Improvements
-
-Potential future improvements include:
-
-- Automated EIA ingestion
-- Automated NOAA ingestion
-- AWS S3 raw-data storage
-- Snowflake data warehousing
-- ETL orchestration
-- Pipeline scheduling
-- Automated data-quality monitoring
-- Statistical anomaly detection
-- Data lineage
-- Schema validation
-- Automated data refreshes
-- Model experiment tracking
-- Automated retraining
-- Model versioning
-- Forecast APIs
-- Interactive dashboards
-- Cloud deployment
-- Infrastructure as code
-
----
-
-# Future Forecasting Improvements
-
-Potential forecasting improvements include:
-
-- XGBoost
-- Gradient-boosted trees
+- Gradient-boosted decision trees
 - Hyperparameter tuning
-- More SPP weather stations
-- Additional weather variables
-- Cyclical hour features
-- Cyclical day-of-week features
-- Cyclical month features
-- Holiday features
-- Extreme-weather indicators
-- Heating-degree-day features
-- Cooling-degree-day features
-- Regional weather aggregates
-- Temperature-demand interaction features
-- Additional lag periods
-- Forecast-safe rolling features
-- Forecast uncertainty intervals
-- Peak-demand prediction
-- Seasonal error analysis
+
+## Power and Energy
+
+- Electricity-demand forecasting
+- Load persistence
+- Daily demand cycles
+- Weekly demand cycles
+- Weather-sensitive load
+- SPP regional demand
 
 ---
 
-# Forecasting Caveats
+# Current Project Results
 
-The current supervised machine-learning models use observed historical weather values during validation.
-
-For a true production day-ahead forecasting system, future observed weather would not yet be known.
-
-A production forecasting pipeline would therefore need to replace target-time observed weather with:
+The final selected model is:
 
 ```text
-weather forecasts
+Tuned XGBoost
 ```
 
-such as numerical weather prediction or forecast API data.
-
-Conceptually:
+with:
 
 ```text
-Historical Model Development
-----------------------------
+2024 Validation
+----------------
+MAE:  1,023.97 MW
+RMSE: 1,347.40 MW
+MAPE: 3.01%
 
-Actual Demand
+2025 Final Evaluation
+---------------------
+MAE:  1,117.60 MW
+RMSE: 1,429.34 MW
+MAPE: 3.18%
+```
+
+The project demonstrates that a combination of:
+
+```text
+Historical electricity demand
 +
-Observed Weather
-        │
-        ▼
-      Model
-
-
-Production Forecasting
-----------------------
-
-Historical Demand
+Regional weather
 +
-Future Weather Forecast
-        │
-        ▼
-      Model
-        │
-        ▼
-Next 24 Hours of Demand
+Calendar information
++
+Nonlinear machine learning
 ```
 
-The current weather inputs should therefore be interpreted as:
-
-```text
-historical observed-weather proxy features
-```
-
-rather than a complete production day-ahead weather pipeline.
+can provide accurate hourly SPP demand estimates while also showing that **data quality is as important as model selection**.
 
 ---
 
-# Forecast Horizon Considerations
+# Future Improvements
 
-Some engineered lag features require additional care in a real 24-hour-ahead forecasting environment.
+## Data Engineering
 
-For example:
+The current pipeline is local and file-based.
 
-```text
-demand_lag_1h
-```
-
-is available when predicting the next immediate hour.
-
-However, when forecasting all 24 future hours simultaneously, the actual demand one hour before later forecast horizons may not yet be known.
-
-For that reason, the initial Linear Regression and Random Forest comparisons use:
+A future production-oriented architecture could migrate toward:
 
 ```text
-demand_lag_24h
-demand_lag_168h
+EIA + NOAA
+     ↓
+Python Ingestion
+     ↓
+Amazon S3
+     ↓
+ETL / Validation
+     ↓
+Snowflake
+     ↓
+Feature Pipeline
+     ↓
+Model Training
+     ↓
+Forecast API
+     ↓
+Dashboard
 ```
 
-rather than:
+Potential improvements include:
 
-```text
-demand_lag_1h
-```
+- Automated scheduled ingestion
+- Incremental data loading
+- Cloud object storage
+- Snowflake warehouse integration
+- Pipeline orchestration
+- Data-quality monitoring
+- Schema validation
+- Data lineage
+- Model artifact storage
+- Automated retraining
+- Forecast monitoring
 
-The current rolling-demand features are also excluded from these first direct day-ahead model comparisons because later horizons could depend on demand observations that would not yet exist at the forecast cutoff.
+## Forecasting
 
-Future versions may address this using:
+Potential modeling improvements include:
 
-- Horizon-specific models
-- Recursive forecasting
-- Direct multi-step forecasting
-- Forecast-cutoff-aware rolling features
-- Lag restrictions based on real feature availability
+- Historical forecast-weather data
+- SPP-specific weather weighting
+- Local-time calendar features
+- Holiday indicators
+- Heating Degree Days
+- Cooling Degree Days
+- Better extreme-weather features
+- Forecast-horizon-specific models
+- Direct multi-horizon forecasting
+- Peak-demand-specific evaluation
+- Prediction intervals
+- SHAP-based model interpretation
+- Additional boosting approaches such as LightGBM or CatBoost
 
 ---
 
-# UTC and Local-Time Considerations
+# Key Takeaway
 
-The current pipeline uses:
+The most important lesson from this project was not simply that XGBoost produced the lowest forecasting error.
 
-```text
-UTC
-```
+The project repeatedly showed that **model performance depends on the quality and temporal correctness of the entire data pipeline**.
 
-throughout the project.
-
-This provides consistent timestamps across electricity and weather datasets.
-
-However, electricity usage behavior is often strongly associated with local clock time.
-
-The Southwest Power Pool spans multiple geographic regions and time zones.
-
-A future improvement could therefore include:
+Several of the most valuable improvements came from investigating model failures:
 
 ```text
-local-time calendar features
+Impossible Linear Regression prediction
+        ↓
+Corrupted weather discovered
+        ↓
+Weather range validation added
+
+Extreme Random Forest prediction
+        ↓
+Corrupted demand discovered
+        ↓
+Demand range validation added
+
+Large 2025 XGBoost error
+        ↓
+Long demand flatlines discovered
+        ↓
+Temporal demand QC added
+        ↓
+Lag-quality propagation added
 ```
 
-in addition to UTC-based features.
-
----
-
-# Forecast Benchmarking
-
-A future extension could compare the project's machine-learning forecasts against SPP's published day-ahead demand forecasts.
-
-Potential comparison:
+The final result is therefore not only a machine-learning model, but a more robust end-to-end forecasting pipeline that performs:
 
 ```text
-Project ML Forecast
-        vs
-SPP Day-Ahead Forecast
-        vs
-Seasonal Naive Baseline
-        vs
-Actual Demand
+data ingestion
+validation
+cleaning
+temporal quality control
+feature engineering
+model training
+hyperparameter selection
+held-out evaluation
+error analysis
 ```
 
-The EIA bulk dataset also contains the SWPP day-ahead forecast series:
+while achieving a final 2025 MAPE of:
 
 ```text
-EBA.SWPP-ALL.DF.H
+3.18%
 ```
 
-which could provide a future industry-oriented benchmark.
-
----
-
-# Model Comparison Framework
-
-All forecasting models are evaluated using a common set of metrics.
-
-Current validation results:
-
-| Model | MAE | RMSE | MAPE |
-|---|---:|---:|---:|
-| **Random Forest** | **1,137.73 MW** | **1,535.01 MW** | **3.36%** |
-| Seasonal Naive - 24 Hour | 1,457.18 MW | 2,003.98 MW | 4.34% |
-| Seasonal Naive - 168 Hour | 2,823.37 MW | 3,865.90 MW | 8.27% |
-| Linear Regression | 3,791.94 MW | 4,950.42 MW | 10.93% |
-| XGBoost | TBD | TBD | TBD |
-
-The 2025 test dataset will remain untouched until model selection is complete.
-
-This prevents repeated model decisions from indirectly overfitting the final test period.
-
----
-
-# Key Findings So Far
-
-The project has produced several important findings:
-
-```text
-1. Previous-day demand is a very strong forecasting baseline.
-
-2. Previous-week demand performs substantially worse than previous-day demand.
-
-3. Basic Linear Regression does not capture the nonlinear structure of the problem well.
-
-4. Random Forest outperforms the primary Seasonal Naive baseline.
-
-5. Weather and electricity datasets can contain extreme corrupted values even when no data is missing.
-
-6. Model diagnostics can help reveal upstream data-quality problems.
-
-7. Timestamp-aware feature engineering is necessary after removing incomplete observations.
-
-8. Short and long missing-data gaps should be treated differently.
-
-9. Feature availability must be considered when designing a realistic forecasting model.
-
-10. The 2025 test set should remain untouched until final model selection.
-```
-
----
-
-# Long-Term Goal
-
-The long-term goal of this project is to evolve beyond a standalone machine-learning experiment into an:
-
-**end-to-end energy data and forecasting platform**
-
-that demonstrates how modern data-engineering and machine-learning techniques can be applied to real-world electrical power-system data.
-
-The project is intended to demonstrate experience across:
-
-```text
-Electrical Power Systems
-        +
-Data Engineering
-        +
-Time-Series Forecasting
-        +
-Machine Learning
-        +
-Cloud Data Architecture
-```
-
-The project also provides a foundation for exploring career paths at the intersection of:
-
-```text
-Energy Systems
-Power Grid Analytics
-Data Engineering
-Machine Learning
-Cloud Engineering
-Forecasting
-```
+on the retained eligible test observations.

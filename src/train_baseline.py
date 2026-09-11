@@ -98,7 +98,7 @@ cv_df = df[
 # ============================================================
 
 model = SeasonalNaive(
-    season_length=168
+    season_length=24
 )
 
 sf = StatsForecast(
